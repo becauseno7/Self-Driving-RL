@@ -202,6 +202,22 @@ appearance.
 The opening wave is exempt: nothing has been drawn at step zero, so there is no
 continuity to break and the scenario is set up exactly as before.
 
+**Cars were drawn the wrong size.** The sprite was 78 px long, which at
+6.4 px/m is 12.2 m of road against a `CAR_LENGTH` of 4.6 m -- two and a half
+times too long. Two cars holding a perfectly legal 5 m gap overlapped on screen
+by 46 px, so the game showed a collision the physics had not detected.
+Laterally it was wrong the other way: 45 px is 0.25 lanes against a collision
+width of 0.55, so mid-merge contact could look like a clean pass.
+
+The camera is squashed 7.6x front-to-back -- a lane is 48.6 px/m across but
+only 6.4 px/m along -- which is what makes 97 m of road fit on screen. An
+honest car under that camera is wide and short: 92 x 29 px. The sprite is now
+derived from `CAR_LENGTH` and `CAR_WIDTH` rather than hard-coded, and
+`LANE_COLLISION_WIDTH` is `CAR_WIDTH / LANE_WIDTH` = 0.514 instead of a
+hand-tuned 0.55. It still clears 0.5, so the merge midpoint stays collidable.
+Sensor ray origins, the ego glow and the impact particles all scale from the
+same footprint. Sprites now touch exactly when the physics reports a crash.
+
 This changed the task. Waves now build over seconds instead of appearing
 complete, and they no longer reshuffle traffic into known-safe geometry, so
 whatever congestion exists persists. Fixed-route completion is unaffected

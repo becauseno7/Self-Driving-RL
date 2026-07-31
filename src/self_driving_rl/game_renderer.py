@@ -286,8 +286,11 @@ class NeonRenderer:
     def _draw_sensors(self, env: NeonHighwayEnv) -> None:
         overlay = pygame.Surface((self.WIDTH, self.HEIGHT), pygame.SRCALPHA)
         ego_x = int(self._lane_center_x(env, self.ego_lane(env)))
-        front_origin = (ego_x, self.EGO_Y - 26)
-        rear_origin = (ego_x, self.EGO_Y + 26)
+        # Rays leave the actual bumpers, which moved when the sprite was
+        # resized to the car's real footprint.
+        half_length = self.car_footprint(env)[1] / 2.0
+        front_origin = (ego_x, int(self.EGO_Y - half_length))
+        rear_origin = (ego_x, int(self.EGO_Y + half_length))
         for lane, (ahead_gap, relative_speed, behind_gap, behind_relative) in enumerate(
             env.lane_sensors()
         ):
@@ -339,6 +342,7 @@ class NeonRenderer:
         for y, car in sorted(visible, key=lambda item: item[0]):
             x = self._lane_center_x(env, float(car.lane))
             self._draw_car(
+                env,
                 x,
                 y,
                 self.TRAFFIC_COLORS[car.color_index],
@@ -353,16 +357,29 @@ class NeonRenderer:
         threat = env.current_threat()["level"]
         pulse = int(22 + 12 * math.sin(env.step_count * 0.18))
         glow_color = self.RED if threat > 0.65 else self.CYAN
-        glow = pygame.Surface((124, 145), pygame.SRCALPHA)
-        pygame.draw.ellipse(glow, (*glow_color, pulse), (8, 10, 108, 122))
-        self.screen.blit(glow, (x - 62, self.EGO_Y - 72))
+        car_width, car_length = self.car_footprint(env)
+        glow_width, glow_height = int(car_width * 1.35), int(car_length * 2.6)
+        glow = pygame.Surface((glow_width, glow_height), pygame.SRCALPHA)
+        pygame.draw.ellipse(glow, (*glow_color, pulse), (0, 0, glow_width, glow_height))
+        self.screen.blit(glow, (x - glow_width // 2, self.EGO_Y - glow_height // 2))
 
-        trail = pygame.Surface((70, 120), pygame.SRCALPHA)
-        pygame.draw.polygon(trail, (*self.CYAN, 24), [(25, 0), (45, 0), (62, 115), (8, 115)])
-        self.screen.blit(trail, (x - 35, self.EGO_Y + 35))
+        trail_width, trail_length = int(car_width * 0.75), int(car_length * 3.2)
+        trail = pygame.Surface((trail_width, trail_length), pygame.SRCALPHA)
+        pygame.draw.polygon(
+            trail,
+            (*self.CYAN, 24),
+            [
+                (trail_width * 0.34, 0),
+                (trail_width * 0.66, 0),
+                (trail_width, trail_length),
+                (0, trail_length),
+            ],
+        )
+        self.screen.blit(trail, (x - trail_width // 2, self.EGO_Y + car_length * 0.5))
 
         turn_direction = int(np.sign(env.target_lane - self.ego_lane(env)))
         self._draw_car(
+            env,
             x,
             self.EGO_Y,
             (39, 217, 235),
@@ -372,8 +389,22 @@ class NeonRenderer:
             turn_direction=turn_direction,
         )
 
+    def car_footprint(self, env: NeonHighwayEnv) -> tuple[float, float]:
+        """The exact space a car occupies on screen, in pixels.
+
+        The camera is squashed front-to-back (a lane is 48.6 px/m across but
+        only 6.4 px/m along), so an honest car is wide and short. Drawing a
+        longer sprite than CAR_LENGTH made cars overlap on screen while the
+        physics still called it a clear gap.
+        """
+        lane_pixels = self.ROAD_WIDTH / env.LANES
+        width = env.CAR_WIDTH / env.LANE_WIDTH * lane_pixels
+        length = env.CAR_LENGTH * self.PIXELS_PER_METER
+        return width, length
+
     def _draw_car(
         self,
+        env: NeonHighwayEnv,
         center_x: float,
         center_y: float,
         color: tuple[int, int, int],
@@ -383,70 +414,86 @@ class NeonRenderer:
         braking: bool,
         turn_direction: int,
     ) -> None:
-        width = 45 + style * 2
-        height = 78 - style * 3
-        x = int(center_x - width / 2)
-        y = int(center_y - height / 2)
-        shadow = pygame.Rect(x + 6, y + 8, width, height)
-        pygame.draw.rect(self.screen, (3, 6, 10), shadow, border_radius=13)
+        width, height = self.car_footprint(env)
+        x, y = center_x - width / 2.0, center_y - height / 2.0
+        radius = max(3, int(height * 0.34))
 
-        for wheel_y in (y + 13, y + height - 26):
-            pygame.draw.rect(self.screen, (6, 8, 12), (x - 4, wheel_y, 7, 18), border_radius=3)
-            pygame.draw.rect(
-                self.screen,
-                (6, 8, 12),
-                (x + width - 3, wheel_y, 7, 18),
-                border_radius=3,
+        def box(
+            left: float, top: float, box_width: float, box_height: float
+        ) -> pygame.Rect:
+            """A sub-rectangle placed as a fraction of the car's footprint."""
+            return pygame.Rect(
+                int(x + left * width),
+                int(y + top * height),
+                max(1, int(box_width * width)),
+                max(1, int(box_height * height)),
             )
 
-        body = pygame.Rect(x, y, width, height)
-        pygame.draw.rect(self.screen, color, body, border_radius=13)
-        highlight = tuple(min(channel + 45, 255) for channel in color)
-        pygame.draw.line(self.screen, highlight, (x + 10, y + 5), (x + width - 10, y + 5), 3)
         pygame.draw.rect(
             self.screen,
-            (13, 27, 44),
-            (x + 7, y + 16, width - 14, 23),
-            border_radius=7,
-        )
-        pygame.draw.line(self.screen, (82, 125, 153), (x + 10, y + 19), (x + width - 11, y + 19), 2)
-        pygame.draw.rect(
-            self.screen,
-            (18, 32, 46),
-            (x + 9, y + 44, width - 18, 18),
-            border_radius=5,
+            (3, 6, 10),
+            box(0.02, 0.10, 1.0, 1.0),
+            border_radius=radius,
         )
 
-        pygame.draw.rect(self.screen, (220, 249, 255), (x + 5, y + 4, 8, 5), border_radius=2)
-        pygame.draw.rect(
+        # Wheels sit proud of the body on both flanks, front and rear.
+        wheel_length, wheel_width = height * 0.30, max(3, int(width * 0.05))
+        for wheel_top in (y + height * 0.06, y + height * 0.64):
+            for wheel_x in (x - wheel_width * 0.6, x + width - wheel_width * 0.4):
+                pygame.draw.rect(
+                    self.screen,
+                    (6, 8, 12),
+                    (int(wheel_x), int(wheel_top), wheel_width, max(2, int(wheel_length))),
+                    border_radius=2,
+                )
+
+        body = pygame.Rect(int(x), int(y), int(width), int(height))
+        pygame.draw.rect(self.screen, color, body, border_radius=radius)
+        highlight = tuple(min(channel + 45, 255) for channel in color)
+        pygame.draw.line(
             self.screen,
-            (220, 249, 255),
-            (x + width - 13, y + 4, 8, 5),
-            border_radius=2,
+            highlight,
+            (int(x + width * 0.16), int(y + height * 0.12)),
+            (int(x + width * 0.84), int(y + height * 0.12)),
+            2,
         )
+
+        # Windscreen forward, rear window aft, cabin between them.
+        cabin_inset = 0.10 + style * 0.02
+        pygame.draw.rect(
+            self.screen, (13, 27, 44), box(cabin_inset, 0.22, 1.0 - 2 * cabin_inset, 0.24),
+            border_radius=max(2, int(height * 0.12)),
+        )
+        pygame.draw.rect(
+            self.screen, (18, 32, 46), box(cabin_inset + 0.04, 0.58, 0.92 - 2 * cabin_inset, 0.22),
+            border_radius=max(2, int(height * 0.10)),
+        )
+
+        for headlight_left in (0.06, 0.82):
+            pygame.draw.rect(
+                self.screen, (220, 249, 255), box(headlight_left, 0.02, 0.12, 0.12),
+                border_radius=2,
+            )
         tail_color = (255, 30, 58) if braking else (203, 36, 69)
-        tail_size = 7 if braking else 5
-        pygame.draw.rect(
-            self.screen,
-            tail_color,
-            (x + 5, y + height - 10, 10, tail_size),
-            border_radius=2,
-        )
-        pygame.draw.rect(
-            self.screen,
-            tail_color,
-            (x + width - 15, y + height - 10, 10, tail_size),
-            border_radius=2,
-        )
+        tail_height = 0.16 if braking else 0.11
+        for tail_left in (0.06, 0.82):
+            pygame.draw.rect(
+                self.screen, tail_color, box(tail_left, 0.98 - tail_height, 0.12, tail_height),
+                border_radius=2,
+            )
 
         if turn_direction != 0 and (pygame.time.get_ticks() // 180) % 2 == 0:
-            signal_x = x + 5 if turn_direction < 0 else x + width - 10
-            pygame.draw.circle(self.screen, self.AMBER, (signal_x, y + height - 8), 4)
+            signal_x = x + width * (0.10 if turn_direction < 0 else 0.90)
+            pygame.draw.circle(
+                self.screen, self.AMBER, (int(signal_x), int(y + height * 0.88)), 3
+            )
 
         if agent:
-            pygame.draw.rect(self.screen, (174, 252, 255), body, 2, border_radius=13)
-            badge = self.font_small_bold.render("RL", True, (225, 255, 255))
-            self.screen.blit(badge, badge.get_rect(center=(int(center_x), y + 53)))
+            pygame.draw.rect(self.screen, (174, 252, 255), body, 2, border_radius=radius)
+            badge = self.font_tiny.render("RL", True, (225, 255, 255))
+            self.screen.blit(
+                badge, badge.get_rect(center=(int(center_x), int(y + height * 0.45)))
+            )
 
     def _draw_header(self, env: NeonHighwayEnv) -> None:
         self._glass_panel(pygame.Rect(18, 16, self.WIDTH - 36, 66), alpha=226, radius=18)
@@ -715,7 +762,7 @@ class NeonRenderer:
     def _draw_impact_particles(self, env: NeonHighwayEnv, phase: float) -> None:
         rng = np.random.default_rng(env.episode_index * 7919)
         center_x = self._lane_center_x(env, self.ego_lane(env))
-        center_y = self.EGO_Y - 18
+        center_y = self.EGO_Y - self.car_footprint(env)[1] / 2.0
         for _ in range(34):
             angle = float(rng.uniform(0, math.tau))
             distance = float(rng.uniform(35, 155)) * phase

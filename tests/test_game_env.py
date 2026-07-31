@@ -224,9 +224,39 @@ def test_no_lateral_blind_spot_in_the_middle_of_a_lane_change() -> None:
         env.close()
 
     assert collided_at is not None, "a car sitting on the ego was never detected"
-    assert collided_at < 1.5, (
-        f"detection only happened at lane {collided_at}; the middle of the merge is a blind spot"
+    assert collided_at < 2.0, (
+        f"detection only happened at lane {collided_at}, after the merge finished"
     )
+
+
+def test_no_lane_position_is_immune_to_every_lane() -> None:
+    """The original bug: mid-merge, no lane centre was within the collision box."""
+    env = NeonHighwayEnv()
+    try:
+        position = 1.0
+        immune = []
+        for _ in range(10):
+            nearest = min(abs(lane - position) for lane in range(env.LANES))
+            if nearest >= env.LANE_COLLISION_WIDTH:
+                immune.append(round(position, 3))
+            position += float(np.clip(2 - position, -0.24, 0.24))
+            if abs(position - 2) < 0.02:
+                position = 2.0
+    finally:
+        env.close()
+
+    assert not immune, f"nothing can hit the ego at lane {immune}"
+
+
+def test_collision_width_matches_a_real_car_in_a_real_lane() -> None:
+    """What the renderer draws and what the physics hits must be one number."""
+    env = NeonHighwayEnv()
+    try:
+        assert env.LANE_COLLISION_WIDTH == env.CAR_WIDTH / env.LANE_WIDTH
+        # Must still clear 0.5, or the midpoint of a merge reopens the blind spot.
+        assert env.LANE_COLLISION_WIDTH > 0.5
+    finally:
+        env.close()
 
 
 def test_collision_reports_the_nearest_car_not_the_first_in_the_list() -> None:

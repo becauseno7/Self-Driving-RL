@@ -89,10 +89,14 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
     VISIBLE_BEHIND = 34.0
     VISIBLE_AHEAD = 102.0
     CAR_LENGTH = 4.6
-    # Half a car width in lane units. Must exceed 0.5 or the midpoint of a lane
-    # change sits further than this from every lane centre and nothing can hit
-    # the ego there.
-    LANE_COLLISION_WIDTH = 0.55
+    CAR_WIDTH = 1.9
+    LANE_WIDTH = 3.7
+    # Two cars touch when their centres are one car width apart. Expressed in
+    # lane units this is the exact footprint the renderer draws, so anything
+    # that looks like a collision is one. It also has to exceed 0.5, or the
+    # midpoint of a lane change would sit further than this from every lane
+    # centre and nothing could hit the ego there.
+    LANE_COLLISION_WIDTH = CAR_WIDTH / LANE_WIDTH
     TRAFFIC_YIELD_WIDTH = 0.8
     TARGET_SPEED_STEP = 1.0
     MAX_ACCELERATION = 2.8
