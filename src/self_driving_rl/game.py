@@ -270,6 +270,12 @@ def build_parser() -> argparse.ArgumentParser:
     random_parser.add_argument("--seed", type=int, default=7)
     random_parser.add_argument("--fps", type=int, default=60)
     random_parser.add_argument(
+        "--speed",
+        type=float,
+        default=1.0,
+        help="World seconds per real second (1.0 = real time)",
+    )
+    random_parser.add_argument(
         "--difficulty",
         choices=sorted(NeonHighwayEnv.DIFFICULTY_MODES),
         default="hard",
@@ -290,6 +296,12 @@ def build_parser() -> argparse.ArgumentParser:
     learn_parser.add_argument("--timesteps", type=int, default=30_000)
     learn_parser.add_argument("--seed", type=int, default=7)
     learn_parser.add_argument("--fps", type=int, default=120)
+    learn_parser.add_argument(
+        "--speed",
+        type=float,
+        default=12.0,
+        help="World seconds per real second (12.0 keeps rendered training at full speed)",
+    )
     learn_parser.add_argument("--run-name", type=str, default=None)
     learn_parser.add_argument("--eval-episodes", type=int, default=20)
     learn_parser.add_argument("--headless", action="store_true", help="Train as fast as possible")
@@ -381,6 +393,12 @@ def build_parser() -> argparse.ArgumentParser:
     watch_parser.add_argument("--seed", type=int, default=10_000)
     watch_parser.add_argument("--fps", type=int, default=60)
     watch_parser.add_argument(
+        "--speed",
+        type=float,
+        default=1.0,
+        help="World seconds per real second (1.0 = real time)",
+    )
+    watch_parser.add_argument(
         "--difficulty",
         choices=sorted(NeonHighwayEnv.DIFFICULTY_MODES),
         default="hard",
@@ -461,6 +479,7 @@ def random_mode(args: argparse.Namespace) -> None:
     env = NeonHighwayEnv(
         render_mode="human",
         render_fps=args.fps,
+        render_speed=args.speed,
         difficulty_mode=args.difficulty,
         episode_seconds=args.seconds,
         endless=args.endless,
@@ -579,6 +598,7 @@ def learn_mode(args: argparse.Namespace) -> None:
         "validation_seed": args.validation_seed,
         "rendered_training": not args.headless,
         "render_fps": args.fps,
+        "render_speed": args.speed,
         "device": args.device,
         "dqn": build_algorithm_kwargs(args.algo, dqn_config),
         "versions": {
@@ -620,6 +640,7 @@ def learn_mode(args: argparse.Namespace) -> None:
         game_env = NeonHighwayEnv(
             render_mode=None if args.headless else "human",
             render_fps=args.fps,
+            render_speed=args.speed,
             difficulty_mode=args.difficulty,
             episode_seconds=args.seconds,
             endless=args.endless,
@@ -779,6 +800,7 @@ def watch_mode(args: argparse.Namespace) -> None:
     env = NeonHighwayEnv(
         render_mode="human",
         render_fps=args.fps,
+        render_speed=args.speed,
         difficulty_mode=args.difficulty,
         episode_seconds=args.seconds,
         endless=args.endless,

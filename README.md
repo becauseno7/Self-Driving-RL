@@ -120,9 +120,16 @@ Long runs validate periodically on a separate fixed seed set. The final
 `model.zip` is the safest checkpoint seen during training; `last_model.zip`
 is also kept so later-policy regression remains inspectable.
 
-Training is intentionally capped at 120 rendered frames per second. Use
-`--headless` for maximum speed. Press `Space` to pause, `H` to hide sensor rays,
-or `Esc` to stop safely and save the current model.
+The game plays back in real time: each 0.1 s simulation step is drawn as
+several interpolated frames rather than one, so motion is smooth instead of
+jumping 14 pixels per frame. `--speed` sets world seconds per real second
+(`watch` and `random` default to 1.0, `learn` to 12.0). Use `--headless` for
+maximum training speed. Press `Space` to pause, `H` to hide sensor rays, or
+`Esc` to stop safely and save the current model.
+
+Nothing is ever teleported where the player can see it. Traffic that needs to
+form a challenge changes its speed and closes the gap over a few seconds;
+vehicles are only repositioned off screen, and drive into frame from there.
 
 Watch the newest trained model without exploration:
 

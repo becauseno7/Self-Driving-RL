@@ -83,6 +83,11 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
     MAX_SPEED = 34.0
     SENSOR_DISTANCE = 90.0
     EPISODE_SECONDS = 45.0
+    # The stretch of road the player can actually see, mirroring the renderer's
+    # camera. Nothing may be teleported inside this window: a car that changes
+    # position or colour on screen reads as a bug, not as traffic.
+    VISIBLE_BEHIND = 34.0
+    VISIBLE_AHEAD = 102.0
     CAR_LENGTH = 4.6
     # Half a car width in lane units. Must exceed 0.5 or the midpoint of a lane
     # change sits further than this from every lane centre and nothing can hit
@@ -138,6 +143,7 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         self,
         render_mode: str | None = None,
         render_fps: int = 60,
+        render_speed: float = 1.0,
         traffic_per_lane: int = 4,
         difficulty_mode: str = "hard",
         episode_seconds: float | None = None,
@@ -155,6 +161,7 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
 
         self.render_mode = render_mode
         self.render_fps = render_fps
+        self.render_speed = render_speed
         self.traffic_per_lane = traffic_per_lane
         self.difficulty_mode = difficulty_mode
         self.episode_seconds = (
@@ -363,6 +370,41 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         car.desired_speed = speed
         car.braking = False
 
+    def _is_visible(self, car: TrafficCar) -> bool:
+        relative = car.position - self.ego_position
+        return -self.VISIBLE_BEHIND <= relative <= self.VISIBLE_AHEAD
+
+    def _nearest_to(self, lane: int, offset: float, used: set[int]) -> TrafficCar:
+        """The car in `lane` already closest to where a wave wants one."""
+        target = self.ego_position + offset
+        candidates = [car for car in self.traffic if car.lane == lane and id(car) not in used]
+        return min(candidates, key=lambda car: abs(car.position - target))
+
+    def _stage_car(self, car: TrafficCar, offset: float, speed: float) -> None:
+        """Set up one wave vehicle without the player seeing anything jump.
+
+        A car already on screen is persuaded rather than moved: changing what
+        it does instead of where it is produces the same squeeze a few seconds
+        later, which is how the situation forms on a real road. A car off
+        screen may be repositioned, but never closer than the edge of the
+        view, so it drives into frame instead of appearing inside it.
+
+        The opening wave is exempt. Nothing has been drawn yet at step zero, so
+        there is no continuity to break and the scenario can be set up exactly.
+        """
+        if self.step_count == 0:
+            self._set_car_state(car, offset, speed)
+            return
+        if self._is_visible(car):
+            car.desired_speed = speed
+            car.braking = speed < car.speed
+            return
+        if offset >= 0.0:
+            offset = max(offset, self.VISIBLE_AHEAD + 6.0)
+        else:
+            offset = min(offset, -(self.VISIBLE_BEHIND + 6.0))
+        self._set_car_state(car, offset, speed)
+
     def _arrange_challenge_lane(
         self,
         lane: int,
@@ -372,15 +414,20 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         front_offset: float,
         front_speed: float,
     ) -> None:
-        lane_cars = sorted(
-            (car for car in self.traffic if car.lane == lane),
-            key=lambda car: car.position,
-        )
-        self._set_car_state(lane_cars[0], rear_offset, rear_speed)
-        self._set_car_state(lane_cars[1], front_offset, front_speed)
-        for index, car in enumerate(lane_cars[2:], start=1):
+        # Pick whichever cars are already nearest the wanted spots, so the
+        # smallest possible change produces the wave.
+        used: set[int] = set()
+        rear = self._nearest_to(lane, rear_offset, used)
+        used.add(id(rear))
+        front = self._nearest_to(lane, front_offset, used)
+        used.add(id(front))
+        self._stage_car(rear, rear_offset, rear_speed)
+        self._stage_car(front, front_offset, front_speed)
+
+        remaining = [car for car in self.traffic if car.lane == lane and id(car) not in used]
+        for index, car in enumerate(sorted(remaining, key=lambda car: car.position), start=1):
             cruise_speed = float(self.np_random.uniform(18.0, 29.0))
-            self._set_car_state(car, front_offset + 46.0 * index, cruise_speed)
+            self._stage_car(car, front_offset + 46.0 * index, cruise_speed)
 
     def _maybe_stage_hard_challenge(self) -> None:
         if self.difficulty_mode != "hard" or self.challenge_active:
@@ -724,6 +771,12 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
                 if relative < -55.0:
                     farthest = max(other.position for other in lane_cars)
                     car.position = farthest + float(self.np_random.uniform(gap_low, gap_high))
+                    # Recycling swaps the car's colour and shape, so it has to
+                    # land out of sight or the player watches one car become
+                    # another.
+                    car.position = max(
+                        car.position, self.ego_position + self.VISIBLE_AHEAD + 6.0
+                    )
                     self._reroll_car(car)
                 elif relative > 190.0:
                     # Re-insert relative to the ego, not to the lane's rearmost
@@ -734,7 +787,10 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
                         nearest - float(self.np_random.uniform(42.0, 62.0)),
                         self.ego_position + 190.0,
                     )
-                    car.position = max(car.position, self.ego_position - 50.0)
+                    car.position = min(
+                        max(car.position, self.ego_position - 50.0),
+                        self.ego_position - self.VISIBLE_BEHIND - 6.0,
+                    )
                     self._reroll_car(car)
         self._resolve_traffic_overlap()
         self._invalidate_sensors()
@@ -1051,7 +1107,11 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         if self.renderer is None:
             from self_driving_rl.game_renderer import NeonRenderer
 
-            self.renderer = NeonRenderer(human=self.render_mode == "human", fps=self.render_fps)
+            self.renderer = NeonRenderer(
+                human=self.render_mode == "human",
+                fps=self.render_fps,
+                speed=self.render_speed,
+            )
 
         frame, keep_running = self.renderer.draw(self)
         if not keep_running:

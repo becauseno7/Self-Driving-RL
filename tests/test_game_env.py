@@ -387,6 +387,42 @@ def test_episode_seconds_rejects_a_route_shorter_than_the_physics_allows() -> No
         raise AssertionError("a 1 second route should have been rejected")
 
 
+def test_nothing_ever_teleports_or_restyles_on_screen() -> None:
+    """A car that jumps or changes colour in view reads as a bug, not traffic."""
+    env = NeonHighwayEnv(difficulty_mode="hard", endless=True)
+    offences: list[str] = []
+    try:
+        env.reset(seed=30_000)
+        for _ in range(2_000):
+            before = {
+                id(car): (car.position, car.color_index, car.style) for car in env.traffic
+            }
+            ego_before = env.ego_position
+            env.step(IDLE)
+            if env.crashed:
+                env.reset(seed=30_000)
+                continue
+
+            for car in env.traffic:
+                previous_position, color, style = before[id(car)]
+                was_visible = (
+                    -env.VISIBLE_BEHIND <= previous_position - ego_before <= env.VISIBLE_AHEAD
+                )
+                now_visible = env._is_visible(car)
+                if not (was_visible or now_visible):
+                    continue
+                # A car under its own power moves at most MAX_SPEED * DT.
+                travelled = abs(car.position - previous_position)
+                if travelled > env.MAX_SPEED * env.DT + 1e-6:
+                    offences.append(f"jumped {travelled:.1f} m while visible")
+                if (car.color_index, car.style) != (color, style):
+                    offences.append("changed appearance while visible")
+    finally:
+        env.close()
+
+    assert not offences, offences[:5]
+
+
 def _clear_the_road(env: NeonHighwayEnv) -> None:
     for car in env.traffic:
         if abs(car.position - env.ego_position) < 12.0:

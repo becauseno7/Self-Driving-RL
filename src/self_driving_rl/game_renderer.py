@@ -10,6 +10,7 @@ import pygame
 from self_driving_rl.game_env import (
     ACTION_COUNT,
     NeonHighwayEnv,
+    TrafficCar,
     decode_action,
     encode_action,
 )
@@ -44,11 +45,14 @@ class NeonRenderer:
         (242, 115, 70),
     ]
 
-    def __init__(self, *, human: bool, fps: int) -> None:
+    def __init__(self, *, human: bool, fps: int, speed: float = 1.0) -> None:
         pygame.init()
         pygame.font.init()
         self.human = human
         self.fps = fps
+        # World seconds per real second. 1.0 plays back as a simulation;
+        # training wants fast-forward, which costs interpolated frames.
+        self.speed = max(speed, 1e-6)
         self.clock = pygame.time.Clock()
         self.screen = (
             pygame.display.set_mode((self.WIDTH, self.HEIGHT))
@@ -68,6 +72,10 @@ class NeonRenderer:
         self.paused = False
         self.show_sensors = True
         self.last_crash_episode = -1
+        # Fraction of the way through the current simulation step. The world
+        # advances 0.1 s per step, so drawing one frame per step would run the
+        # simulation at six times real time in 14-pixel jumps.
+        self.alpha = 1.0
 
     def _make_background(self) -> pygame.Surface:
         surface = pygame.Surface((self.WIDTH, self.HEIGHT))
@@ -126,17 +134,36 @@ class NeonRenderer:
                 pygame.display.flip()
                 self.clock.tick(60)
             self.last_crash_episode = env.episode_index
-        else:
-            self._render_frame(env, crash_phase=1.0 if env.crashed else 0.0)
-            if self.human:
+        elif self.human:
+            # One simulation step covers env.DT of world time. Drawing it as a
+            # single frame would play the world back at DT * fps times real
+            # speed, so the step is split into interpolated frames instead.
+            for frame_index in range(self._frames_per_step(env)):
+                if frame_index and not self._handle_events():
+                    return None, False
+                alpha = (frame_index + 1) / self._frames_per_step(env)
+                self._render_frame(
+                    env, crash_phase=1.0 if env.crashed else 0.0, alpha=alpha
+                )
                 pygame.display.flip()
                 if self.fps > 0:
                     self.clock.tick(self.fps)
+        else:
+            self._render_frame(env, crash_phase=1.0 if env.crashed else 0.0)
 
         frame = None if self.human else self._frame_array()
         return frame, True
 
-    def _render_frame(self, env: NeonHighwayEnv, *, crash_phase: float) -> None:
+    def _frames_per_step(self, env: NeonHighwayEnv) -> int:
+        """Frames per simulation step needed to hit the requested playback speed."""
+        if self.fps <= 0:
+            return 1
+        return max(1, round(self.fps * env.DT / self.speed))
+
+    def _render_frame(
+        self, env: NeonHighwayEnv, *, crash_phase: float, alpha: float = 1.0
+    ) -> None:
+        self.alpha = alpha
         self.screen.blit(self.background, (0, 0))
         self._draw_road(env)
         if self.show_sensors:
@@ -218,7 +245,7 @@ class NeonRenderer:
             2,
         )
 
-        offset = int((env.ego_position * self.PIXELS_PER_METER) % 62)
+        offset = int((self.ego_position(env) * self.PIXELS_PER_METER) % 62)
         for lane in range(1, env.LANES):
             x = int(self.ROAD_LEFT + lane * lane_width)
             for y in range(-62 + offset, self.HEIGHT, 62):
@@ -231,23 +258,34 @@ class NeonRenderer:
             for y in range(-40 + offset, self.HEIGHT, 62):
                 pygame.draw.circle(self.screen, color, (x, y), 2)
 
-        marker_offset = int((env.ego_position * self.PIXELS_PER_METER) % 180)
+        marker_offset = int((self.ego_position(env) * self.PIXELS_PER_METER) % 180)
         for y in range(-180 + marker_offset, self.HEIGHT, 180):
-            marker = (
-                f"{int((env.ego_position + (self.EGO_Y - y) / self.PIXELS_PER_METER) // 100):02d}"
-            )
+            ahead = (self.EGO_Y - y) / self.PIXELS_PER_METER
+            marker = f"{int((self.ego_position(env) + ahead) // 100):02d}"
             self._text(marker, self.font_tiny, (67, 76, 90), self.ROAD_LEFT + 28, y)
 
     def _lane_center_x(self, env: NeonHighwayEnv, lane_position: float) -> float:
         lane_width = self.ROAD_WIDTH / env.LANES
         return self.ROAD_LEFT + lane_width * (lane_position + 0.5)
 
+    def _lerp(self, previous: float, current: float) -> float:
+        return previous + (current - previous) * self.alpha
+
+    def ego_position(self, env: NeonHighwayEnv) -> float:
+        return self._lerp(env.previous_ego_position, env.ego_position)
+
+    def ego_lane(self, env: NeonHighwayEnv) -> float:
+        return self._lerp(env.previous_lane_position, env.lane_position)
+
+    def car_position(self, car: TrafficCar) -> float:
+        return self._lerp(car.previous_position, car.position)
+
     def _screen_y(self, env: NeonHighwayEnv, world_position: float) -> float:
-        return self.EGO_Y - (world_position - env.ego_position) * self.PIXELS_PER_METER
+        return self.EGO_Y - (world_position - self.ego_position(env)) * self.PIXELS_PER_METER
 
     def _draw_sensors(self, env: NeonHighwayEnv) -> None:
         overlay = pygame.Surface((self.WIDTH, self.HEIGHT), pygame.SRCALPHA)
-        ego_x = int(self._lane_center_x(env, env.lane_position))
+        ego_x = int(self._lane_center_x(env, self.ego_lane(env)))
         front_origin = (ego_x, self.EGO_Y - 26)
         rear_origin = (ego_x, self.EGO_Y + 26)
         for lane, (ahead_gap, relative_speed, behind_gap, behind_relative) in enumerate(
@@ -295,7 +333,7 @@ class NeonRenderer:
     def _draw_traffic(self, env: NeonHighwayEnv) -> None:
         visible = []
         for car in env.traffic:
-            y = self._screen_y(env, car.position)
+            y = self._screen_y(env, self.car_position(car))
             if -100 < y < self.HEIGHT + 100:
                 visible.append((y, car))
         for y, car in sorted(visible, key=lambda item: item[0]):
@@ -311,7 +349,7 @@ class NeonRenderer:
             )
 
     def _draw_agent(self, env: NeonHighwayEnv) -> None:
-        x = self._lane_center_x(env, env.lane_position)
+        x = self._lane_center_x(env, self.ego_lane(env))
         threat = env.current_threat()["level"]
         pulse = int(22 + 12 * math.sin(env.step_count * 0.18))
         glow_color = self.RED if threat > 0.65 else self.CYAN
@@ -323,7 +361,7 @@ class NeonRenderer:
         pygame.draw.polygon(trail, (*self.CYAN, 24), [(25, 0), (45, 0), (62, 115), (8, 115)])
         self.screen.blit(trail, (x - 35, self.EGO_Y + 35))
 
-        turn_direction = int(np.sign(env.target_lane - env.lane_position))
+        turn_direction = int(np.sign(env.target_lane - self.ego_lane(env)))
         self._draw_car(
             x,
             self.EGO_Y,
@@ -676,7 +714,7 @@ class NeonRenderer:
 
     def _draw_impact_particles(self, env: NeonHighwayEnv, phase: float) -> None:
         rng = np.random.default_rng(env.episode_index * 7919)
-        center_x = self._lane_center_x(env, env.lane_position)
+        center_x = self._lane_center_x(env, self.ego_lane(env))
         center_y = self.EGO_Y - 18
         for _ in range(34):
             angle = float(rng.uniform(0, math.tau))

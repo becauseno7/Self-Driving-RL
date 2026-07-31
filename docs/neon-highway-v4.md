@@ -166,6 +166,57 @@ Completion rate carries no information when every episode ends in a crash, so
 two 30-episode seed sets the 2M-step model averages 4m 28s and 3m 14s per life,
 clearing 17.9 and 13.0 waves, with a single best run of 19m 02s.
 
+## Presentation: real-time, and nothing pops
+
+Two things made the game read as buggy rather than as a simulation.
+
+**The world ran at six times real time.** One simulation step covers `DT` =
+0.1 s and was drawn as exactly one frame, so at 60 fps the world advanced six
+seconds per real second in 14-pixel jumps. Rendering was never the bottleneck
+-- a frame costs 5.1 ms, a 198 fps ceiling. The renderer now splits each step
+into `round(fps * DT / speed)` interpolated frames, drawing positions as
+`previous + alpha * (current - previous)` from the previous-position fields the
+physics already kept. At 60 fps that is six frames per step, real time, and
+0.5 pixels of motion per frame.
+
+`--speed` sets world seconds per real second. `watch` and `random` default to
+1.0; `learn` defaults to 12.0, which yields one frame per step at 120 fps and
+so leaves rendered training exactly as fast as it was.
+
+**Cars teleported in view.** The visible road runs from 34 m behind the car to
+102 m ahead. Wave staging placed vehicles at -9, -21, +17, +30 and +49 m, so up
+to six cars appeared out of nothing every wave -- every 15 s in endless mode.
+Recycling could also drop a car into view with a fresh colour and body shape,
+so one car visibly became another.
+
+Staging now respects the camera. A car already on screen is *persuaded* rather
+than moved: its desired speed changes and the IDM closes the gap over the next
+few seconds, which is how a squeeze forms on a real road. A car off screen may
+be repositioned, but never nearer than the edge of the view, so it drives into
+frame. Recycling is clamped the same way. `VISIBLE_BEHIND` and `VISIBLE_AHEAD`
+encode the camera in the environment, and
+`test_nothing_ever_teleports_or_restyles_on_screen` asserts that across 2,000
+steps no visible car ever moves further than `MAX_SPEED * DT` or changes
+appearance.
+
+The opening wave is exempt: nothing has been drawn at step zero, so there is no
+continuity to break and the scenario is set up exactly as before.
+
+This changed the task. Waves now build over seconds instead of appearing
+complete, and they no longer reshuffle traffic into known-safe geometry, so
+whatever congestion exists persists. Fixed-route completion is unaffected
+(64% mean over two 100-episode sets, against 65% before), but endless survival
+roughly halved:
+
+| | Mean survival | Longest run |
+|---|---:|---:|
+| Teleporting waves | 3m 14s - 4m 28s | 19m 02s |
+| Smooth waves | 1m 53s - 2m 37s | 8m 32s |
+
+Traffic speed does not decay over long runs (mean desired speed holds at
+23-25 m/s across 4,000 steps), so this is a genuinely harder task rather than a
+leak. Retraining against it should recover the difference.
+
 ## Results
 
 `runs/game/v4-qrdqn-2m`: QR-DQN, 2,000,000 steps, 8 parallel environments,
