@@ -119,6 +119,8 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
     OVERTAKE_BONUS = 0.60
     PASSED_BY_TRAFFIC_COST = 0.35
     BLOCKED_WITH_SAFE_PASS_COST = 0.005
+    RAPID_LANE_CHANGE_STEPS = 35
+    LANE_REVERSAL_WINDOW_STEPS = 60
     # A wave is staged every CHALLENGE_INTERVAL_STEPS, so a longer route is a
     # longer endurance test rather than the same three waves with dead time
     # bolted on the end. The default 45 s route gives the familiar three.
@@ -226,10 +228,15 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         self.near_misses = 0
         self.safe_lane_changes = 0
         self.lane_changes = 0
+        self.unsafe_lane_changes = 0
+        self.unproductive_lane_changes = 0
+        self.rapid_lane_changes = 0
+        self.lane_reversals = 0
         self.overtakes = 0
         self.passed_by_traffic = 0
         self.passing_opportunities = 0
         self.passing_actions = 0
+        self.missed_passing_opportunities = 0
         self.blocked_steps = 0
         self.invalid_actions = 0
         self.challenges_presented = 0
@@ -240,6 +247,8 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         self._next_challenge_index = 0
         self._near_miss_active = False
         self._passing_opportunity_active = False
+        self._last_lane_change_step = -1_000_000
+        self._last_lane_change_direction = 0
         self._previous_potential = 0.0
         self.quit_requested = False
         self.renderer: Any | None = None
@@ -337,10 +346,15 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         self.near_misses = 0
         self.safe_lane_changes = 0
         self.lane_changes = 0
+        self.unsafe_lane_changes = 0
+        self.unproductive_lane_changes = 0
+        self.rapid_lane_changes = 0
+        self.lane_reversals = 0
         self.overtakes = 0
         self.passed_by_traffic = 0
         self.passing_opportunities = 0
         self.passing_actions = 0
+        self.missed_passing_opportunities = 0
         self.blocked_steps = 0
         self.invalid_actions = 0
         self.challenges_presented = 0
@@ -351,6 +365,8 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         self._next_challenge_index = 0
         self._near_miss_active = False
         self._passing_opportunity_active = False
+        self._last_lane_change_step = -1_000_000
+        self._last_lane_change_direction = 0
         self._spawn_traffic()
         self._maybe_stage_hard_challenge()
         self._invalidate_sensors()
@@ -540,6 +556,8 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         passing_opportunity = bool(passing_options)
         if passing_opportunity and not self._passing_opportunity_active:
             self.passing_opportunities += 1
+        elif not passing_opportunity and self._passing_opportunity_active:
+            self.missed_passing_opportunities += 1
         self._passing_opportunity_active = passing_opportunity
         self.last_action = action
         action_result = self._apply_action(action, passing_options=passing_options)
@@ -644,6 +662,20 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
                 lane_change_started = True
                 self.lane_changes += 1
                 passing_maneuver = candidate_lane in passing_options
+                steps_since_change = self.step_count - self._last_lane_change_step
+                if steps_since_change < self.RAPID_LANE_CHANGE_STEPS:
+                    self.rapid_lane_changes += 1
+                if (
+                    direction == -self._last_lane_change_direction
+                    and steps_since_change < self.LANE_REVERSAL_WINDOW_STEPS
+                ):
+                    self.lane_reversals += 1
+                if not safe_lane_change:
+                    self.unsafe_lane_changes += 1
+                if passing_options and not passing_maneuver:
+                    self.unproductive_lane_changes += 1
+                self._last_lane_change_step = self.step_count
+                self._last_lane_change_direction = direction
                 if danger_here and safe_lane_change:
                     self.safe_lane_changes += 1
             else:
@@ -1304,11 +1336,16 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
             "near_misses": self.near_misses,
             "safe_lane_changes": self.safe_lane_changes,
             "lane_changes": self.lane_changes,
+            "unsafe_lane_changes": self.unsafe_lane_changes,
+            "unproductive_lane_changes": self.unproductive_lane_changes,
+            "rapid_lane_changes": self.rapid_lane_changes,
+            "lane_reversals": self.lane_reversals,
             "overtakes": self.overtakes,
             "passed_by_traffic": self.passed_by_traffic,
             "net_overtakes": self.overtakes - self.passed_by_traffic,
             "passing_opportunities": self.passing_opportunities,
             "passing_actions": self.passing_actions,
+            "missed_passing_opportunities": self.missed_passing_opportunities,
             "passing_opportunity": bool(self.passing_lane_options()),
             "blocked_steps": self.blocked_steps,
             "distance_m": self.ego_position,

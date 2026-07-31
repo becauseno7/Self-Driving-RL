@@ -46,9 +46,16 @@ class EvaluationSummary:
     mean_passed_by_traffic: float
     mean_net_overtakes: float
     mean_lane_changes: float
+    mean_unsafe_lane_changes: float
+    mean_unproductive_lane_changes: float
+    mean_rapid_lane_changes: float
+    mean_lane_reversals: float
+    mean_missed_passing_opportunities: float
     overtakes_per_100km: float
     lane_changes_per_100km: float
+    lane_changes_per_overtake: float
     passing_response_rate: float
+    passing_miss_rate: float
     blocked_step_rate: float
     mean_min_ttc: float
     mean_min_rear_ttc: float
@@ -86,6 +93,11 @@ def evaluate_in_env(
     overtakes: list[int] = []
     passed_by_traffic: list[int] = []
     lane_changes: list[int] = []
+    unsafe_lane_changes: list[int] = []
+    unproductive_lane_changes: list[int] = []
+    rapid_lane_changes: list[int] = []
+    lane_reversals: list[int] = []
+    missed_passing_opportunities: list[int] = []
     passing_opportunities = 0
     passing_actions = 0
     blocked_steps = 0
@@ -138,6 +150,13 @@ def evaluate_in_env(
         overtakes.append(int(final_info.get("overtakes", 0)))
         passed_by_traffic.append(int(final_info.get("passed_by_traffic", 0)))
         lane_changes.append(int(final_info.get("lane_changes", 0)))
+        unsafe_lane_changes.append(int(final_info.get("unsafe_lane_changes", 0)))
+        unproductive_lane_changes.append(int(final_info.get("unproductive_lane_changes", 0)))
+        rapid_lane_changes.append(int(final_info.get("rapid_lane_changes", 0)))
+        lane_reversals.append(int(final_info.get("lane_reversals", 0)))
+        missed_passing_opportunities.append(
+            int(final_info.get("missed_passing_opportunities", 0))
+        )
         passing_opportunities += int(final_info.get("passing_opportunities", 0))
         passing_actions += int(final_info.get("passing_actions", 0))
         blocked_steps += int(final_info.get("blocked_steps", 0))
@@ -163,14 +182,27 @@ def evaluate_in_env(
         mean_passed_by_traffic=float(np.mean(passed_by_traffic)),
         mean_net_overtakes=float(np.mean(np.subtract(overtakes, passed_by_traffic))),
         mean_lane_changes=float(np.mean(lane_changes)),
+        mean_unsafe_lane_changes=float(np.mean(unsafe_lane_changes)),
+        mean_unproductive_lane_changes=float(np.mean(unproductive_lane_changes)),
+        mean_rapid_lane_changes=float(np.mean(rapid_lane_changes)),
+        mean_lane_reversals=float(np.mean(lane_reversals)),
+        mean_missed_passing_opportunities=float(np.mean(missed_passing_opportunities)),
         overtakes_per_100km=(
             100.0 * total_overtakes / distance_km if distance_km > 0.0 else 0.0
         ),
         lane_changes_per_100km=(
             100.0 * total_lane_changes / distance_km if distance_km > 0.0 else 0.0
         ),
+        lane_changes_per_overtake=(
+            total_lane_changes / total_overtakes if total_overtakes else float("inf")
+        ),
         passing_response_rate=(
             passing_actions / passing_opportunities if passing_opportunities else 0.0
+        ),
+        passing_miss_rate=(
+            int(np.sum(missed_passing_opportunities)) / passing_opportunities
+            if passing_opportunities
+            else 0.0
         ),
         blocked_step_rate=blocked_steps / max(int(np.sum(lengths)), 1),
         mean_min_ttc=(

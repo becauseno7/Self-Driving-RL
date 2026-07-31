@@ -807,6 +807,33 @@ def test_traffic_reward_values_completed_passes_not_idle_weaving() -> None:
     assert weave_traffic_reward == 0.0
 
 
+def test_preference_telemetry_counts_missed_passes_and_quick_reversals() -> None:
+    env = NeonHighwayEnv(difficulty_mode="standard")
+    try:
+        env.reset(seed=206)
+        env._passing_opportunity_active = True
+        env.missed_passing_opportunities = 0
+        for index, car in enumerate(env.traffic):
+            car.position = env.ego_position + 300.0 + 10.0 * index
+            car.previous_position = car.position
+        env._invalidate_sensors()
+        env.step(IDLE)
+
+        env.target_lane = 1
+        env.lane_position = 1.0
+        env._apply_action(1)
+        env.target_lane = 0
+        env.lane_position = 0.0
+        env.step_count += 10
+        env._apply_action(7)
+    finally:
+        env.close()
+
+    assert env.missed_passing_opportunities == 1
+    assert env.rapid_lane_changes == 1
+    assert env.lane_reversals == 1
+
+
 def test_wrong_lane_does_not_evade_blocked_traffic_cost() -> None:
     env = NeonHighwayEnv(difficulty_mode="standard")
     try:

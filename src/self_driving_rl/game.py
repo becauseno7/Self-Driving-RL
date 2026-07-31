@@ -102,12 +102,16 @@ def build_algorithm_kwargs(algorithm: str, dqn_config: dict[str, Any]) -> dict[s
     return config
 
 
-def load_model(path: Path, device: str = "cpu") -> OffPolicyAlgorithm:
+def load_model(
+    path: Path,
+    device: str = "cpu",
+    env: Any | None = None,
+) -> OffPolicyAlgorithm:
     """Load a checkpoint without needing to be told which algorithm wrote it."""
     errors: list[str] = []
     for name, algorithm_class in ALGORITHMS.items():
         try:
-            return algorithm_class.load(path, device=device)
+            return algorithm_class.load(path, device=device, env=env)
         except (OSError, ValueError, KeyError, RuntimeError, AttributeError) as error:
             errors.append(f"{name}: {error}")
     raise SystemExit(f"Could not load {path} as any known algorithm.\n" + "\n".join(errors))
@@ -450,6 +454,9 @@ def run_policy(
 
     while completed < episodes and not env.quit_requested:
         observation, _ = env.reset(seed=seed + completed)
+        reset_policy = getattr(choose_action, "reset", None)
+        if callable(reset_policy):
+            reset_policy()
         terminated = truncated = False
         while not (terminated or truncated) and not env.quit_requested:
             q_values = (

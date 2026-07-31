@@ -313,6 +313,31 @@ net passes with fewer lane changes, showing that the desired behaviour is
 achievable. See [docs/neon-highway-v5.md](docs/neon-highway-v5.md) for the exact
 metrics, reward and reproducible training command.
 
+### V6 RLAIF good driver
+
+V6 learns driving preferences from AI-ranked, matched trajectories while
+keeping the proven V5 policy frozen underneath. A confidence-gated residual
+can take a clearly useful pass or suppress a pointless reversal; an independent
+safety shield rejects any proposal that fails the lane-gap, rear-TTC, threat,
+or pedal-consistency checks.
+
+Watch the calibrated driver:
+
+```powershell
+uv run sdr-rlaif watch `
+  --base-model runs/game/v5-good-driver-2p5m-restart/model.zip `
+  --override-model runs/rlaif/v6-good-driver/override_model.pt `
+  --difficulty hard --episodes 10
+```
+
+Add `--endless` to keep restarting only after crashes. On the untouched
+100-route seed range beginning at 130,000, V6 matched V5 at 98% completion and
+2% crashes while cutting lane changes from 16.93 to 8.94, reversals from 11.10
+to 3.63, missed passing opportunities from 0.71 to 0.41, and blocked time from
+10.55% to 5.08%. See [docs/neon-highway-v6-rlaif.md](docs/neon-highway-v6-rlaif.md)
+for the preference rubric, failed experiments, training commands, and full
+evaluation.
+
 ## Collaboration style
 
 The code is split into small files with one job each. Before each major change,
