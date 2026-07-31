@@ -387,6 +387,88 @@ def test_episode_seconds_rejects_a_route_shorter_than_the_physics_allows() -> No
         raise AssertionError("a 1 second route should have been rejected")
 
 
+def test_endless_mode_only_ends_on_a_crash() -> None:
+    env = NeonHighwayEnv(difficulty_mode="hard", endless=True)
+    try:
+        env.reset(seed=7)
+        terminated = truncated = False
+        steps = 0
+        info: dict = {}
+        while not (terminated or truncated) and steps < 3_000:
+            for car in env.traffic:  # keep the road survivable
+                if abs(car.position - env.ego_position) < 12.0:
+                    car.position = env.ego_position + 300.0
+                    car.previous_position = car.position
+            _, _, terminated, truncated, info = env.step(IDLE)
+            steps += 1
+    finally:
+        env.close()
+
+    assert steps == 3_000, "endless mode ended without a crash"
+    assert not terminated and not truncated
+    assert info["completed"] is False, "endless mode should never 'complete'"
+    assert info["laps_completed"] == 6, "3,000 steps is six 450-step laps"
+
+
+def test_endless_laps_recycle_the_clock_and_the_waves() -> None:
+    """A lap must look like a fresh route, or a route-trained policy is lost."""
+    env = NeonHighwayEnv(difficulty_mode="hard", endless=True)
+    try:
+        env.reset(seed=7)
+        time_remaining_at_lap_start = []
+        for _ in range(1_000):
+            for car in env.traffic:
+                if abs(car.position - env.ego_position) < 12.0:
+                    car.position = env.ego_position + 300.0
+                    car.previous_position = car.position
+            env.step(IDLE)
+            if env.lap_step == 0:
+                time_remaining_at_lap_start.append(float(env._observation()[6]))
+                assert env.challenges_resolved == 0, "wave counter did not reset"
+        laps = env.laps_completed
+    finally:
+        env.close()
+
+    assert laps == 2
+    assert time_remaining_at_lap_start == [1.0, 1.0], "the clock did not restart"
+
+
+def test_a_completed_lap_pays_the_route_bonus_without_ending_the_episode() -> None:
+    env = NeonHighwayEnv(difficulty_mode="hard", endless=True)
+    try:
+        env.reset(seed=7)
+        lap_reward = None
+        for _ in range(600):
+            for car in env.traffic:
+                if abs(car.position - env.ego_position) < 12.0:
+                    car.position = env.ego_position + 300.0
+                    car.previous_position = car.position
+            _, _, terminated, truncated, info = env.step(IDLE)
+            if env.lap_step == 0 and env.laps_completed == 1:
+                lap_reward = info["reward_components"]["progress"]
+                assert not (terminated or truncated)
+                break
+    finally:
+        env.close()
+
+    assert lap_reward is not None, "no lap was banked"
+    assert lap_reward > env.COMPLETION_BONUS
+
+
+def test_fixed_route_mode_is_unchanged_by_the_endless_machinery() -> None:
+    fixed = NeonHighwayEnv(difficulty_mode="hard")
+    try:
+        fixed.reset(seed=21)
+        assert fixed.endless is False
+        for _ in range(40):
+            fixed.step(IDLE)
+            assert fixed.lap_step == fixed.step_count, "lap clock drifted off endless"
+            if fixed.crashed:
+                break
+    finally:
+        fixed.close()
+
+
 def test_observation_exposes_the_clock_and_wave_state() -> None:
     """The reward has terminal and wave terms, so the agent must see the clock."""
     env = NeonHighwayEnv(difficulty_mode="hard")

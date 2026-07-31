@@ -127,12 +127,15 @@ def make_training_env(
     index: int,
     mirror: bool,
     episode_seconds: float | None = None,
+    endless: bool = False,
 ) -> Any:
     """Factory for SubprocVecEnv workers; each env gets its own seed stream."""
 
     def _init() -> Monitor:
         env: gym.Env = NeonHighwayEnv(
-            difficulty_mode=difficulty_mode, episode_seconds=episode_seconds
+            difficulty_mode=difficulty_mode,
+            episode_seconds=episode_seconds,
+            endless=endless,
         )
         if mirror:
             env = MirrorSymmetry(env)
@@ -207,9 +210,11 @@ class SafetyEvalCallback(BaseCallback):
         seed: int,
         difficulty_mode: str,
         episode_seconds: float | None = None,
+        endless: bool = False,
     ) -> None:
         super().__init__()
         self.episode_seconds = episode_seconds
+        self.endless = endless
         self.run_dir = run_dir
         self.eval_freq = eval_freq
         self.episodes = episodes
@@ -229,6 +234,7 @@ class SafetyEvalCallback(BaseCallback):
             seed=self.seed,
             difficulty_mode=self.difficulty_mode,
             episode_seconds=self.episode_seconds,
+            endless=self.endless,
         )
         record = {"timesteps": self.num_timesteps, **result}
         self.history.append(record)
@@ -273,6 +279,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="Route length in simulated seconds (default 45; a wave is added every 15 s)",
+    )
+    random_parser.add_argument(
+        "--endless",
+        action="store_true",
+        help="Never finish: banked routes become laps and only a crash restarts",
     )
 
     learn_parser = subparsers.add_parser("learn", help="Watch DQN learn while it drives")
@@ -327,6 +338,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Route length in simulated seconds (default 45; a wave is added every 15 s)",
     )
+    learn_parser.add_argument(
+        "--endless",
+        action="store_true",
+        help="Never finish: banked routes become laps and only a crash restarts",
+    )
 
     evaluate_parser = subparsers.add_parser(
         "evaluate",
@@ -353,6 +369,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Route length in simulated seconds (default 45; a wave is added every 15 s)",
     )
+    evaluate_parser.add_argument(
+        "--endless",
+        action="store_true",
+        help="Never finish: banked routes become laps and only a crash restarts",
+    )
 
     watch_parser = subparsers.add_parser("watch", help="Watch the newest or selected trained model")
     watch_parser.add_argument("--model", type=Path, default=None)
@@ -369,6 +390,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="Route length in simulated seconds (default 45; a wave is added every 15 s)",
+    )
+    watch_parser.add_argument(
+        "--endless",
+        action="store_true",
+        help="Never finish: banked routes become laps and only a crash restarts",
     )
     return parser
 
@@ -431,6 +457,7 @@ def random_mode(args: argparse.Namespace) -> None:
         render_fps=args.fps,
         difficulty_mode=args.difficulty,
         episode_seconds=args.seconds,
+        endless=args.endless,
     )
     env.action_space.seed(args.seed)
     try:
@@ -453,8 +480,11 @@ def _evaluation(
     seed: int,
     difficulty_mode: str,
     episode_seconds: float | None = None,
+    endless: bool = False,
 ) -> dict[str, Any]:
-    env = NeonHighwayEnv(difficulty_mode=difficulty_mode, episode_seconds=episode_seconds)
+    env = NeonHighwayEnv(
+        difficulty_mode=difficulty_mode, episode_seconds=episode_seconds, endless=endless
+    )
     try:
         _ensure_model_compatible(model, env)
         return evaluate_in_env(
@@ -535,6 +565,7 @@ def learn_mode(args: argparse.Namespace) -> None:
         "mirror_augmentation": args.mirror,
         "difficulty": args.difficulty,
         "episode_seconds": args.seconds or NeonHighwayEnv.EPISODE_SECONDS,
+        "endless": args.endless,
         "evaluation_seed": 10_000,
         "evaluation_episodes": args.eval_episodes,
         "validation_frequency": args.validation_freq,
@@ -555,6 +586,7 @@ def learn_mode(args: argparse.Namespace) -> None:
         seed=10_000,
         difficulty_mode=args.difficulty,
         episode_seconds=args.seconds,
+        endless=args.endless,
     )
     (run_dir / "random_baseline.json").write_text(
         json.dumps(baseline, indent=2) + "\n", encoding="utf-8"
@@ -567,7 +599,12 @@ def learn_mode(args: argparse.Namespace) -> None:
         training_env: Any = SubprocVecEnv(
             [
                 make_training_env(
-                    args.difficulty, args.seed, index, args.mirror, args.seconds
+                    args.difficulty,
+                    args.seed,
+                    index,
+                    args.mirror,
+                    args.seconds,
+                    args.endless,
                 )
                 for index in range(args.envs)
             ]
@@ -579,6 +616,7 @@ def learn_mode(args: argparse.Namespace) -> None:
             render_fps=args.fps,
             difficulty_mode=args.difficulty,
             episode_seconds=args.seconds,
+            endless=args.endless,
         )
         wrapped: gym.Env = MirrorSymmetry(game_env) if args.mirror else game_env
         training_env = Monitor(wrapped, str(run_dir / "monitor.csv"))
@@ -600,6 +638,7 @@ def learn_mode(args: argparse.Namespace) -> None:
             seed=args.validation_seed,
             difficulty_mode=args.difficulty,
             episode_seconds=args.seconds,
+            endless=args.endless,
         )
     ]
     if game_env is not None:
@@ -625,6 +664,7 @@ def learn_mode(args: argparse.Namespace) -> None:
         seed=10_000,
         difficulty_mode=args.difficulty,
         episode_seconds=args.seconds,
+        endless=args.endless,
     )
     (run_dir / "evaluation.json").write_text(
         json.dumps(evaluation, indent=2) + "\n", encoding="utf-8"
@@ -683,23 +723,40 @@ def evaluate_mode(args: argparse.Namespace) -> None:
             seed=seed,
             difficulty_mode=args.difficulty,
             episode_seconds=args.seconds,
+            endless=args.endless,
         )
         results[str(seed)] = result
-        print(
-            f"  seeds {seed:>7,}-{seed + args.episodes - 1:<7,} "
-            f"completion {result['completion_rate']:>4.0%}  "
-            f"crash {result['crash_rate']:>4.0%}  "
-            f"timeout {result['timeout_rate']:>4.0%}  "
-            f"waves {result['mean_challenges_resolved']:.2f}  "
-            f"return {result['mean_return']:+.1f}"
-        )
+        span = f"  seeds {seed:>7,}-{seed + args.episodes - 1:<7,} "
+        if args.endless:
+            # Nothing ever "completes", so survival is the whole story.
+            print(
+                span + f"laps {result['mean_laps']:>5.2f}  "
+                f"steps {result['mean_episode_length']:>7.0f}  "
+                f"crash {result['crash_rate']:>4.0%}  "
+                f"return {result['mean_return']:+.1f}"
+            )
+        else:
+            print(
+                span + f"completion {result['completion_rate']:>4.0%}  "
+                f"crash {result['crash_rate']:>4.0%}  "
+                f"timeout {result['timeout_rate']:>4.0%}  "
+                f"waves {result['mean_challenges_resolved']:.2f}  "
+                f"return {result['mean_return']:+.1f}"
+            )
 
     if len(results) > 1:
-        rates = [result["completion_rate"] for result in results.values()]
-        print(
-            f"\n  across {len(rates)} sets: completion "
-            f"{min(rates):.0%}-{max(rates):.0%}, mean {float(np.mean(rates)):.0%}"
-        )
+        key = "mean_laps" if args.endless else "completion_rate"
+        values = [result[key] for result in results.values()]
+        if args.endless:
+            print(
+                f"\n  across {len(values)} sets: laps "
+                f"{min(values):.2f}-{max(values):.2f}, mean {float(np.mean(values)):.2f}"
+            )
+        else:
+            print(
+                f"\n  across {len(values)} sets: completion "
+                f"{min(values):.0%}-{max(values):.0%}, mean {float(np.mean(values)):.0%}"
+            )
 
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -715,6 +772,7 @@ def watch_mode(args: argparse.Namespace) -> None:
         render_fps=args.fps,
         difficulty_mode=args.difficulty,
         episode_seconds=args.seconds,
+        endless=args.endless,
     )
     try:
         _ensure_model_compatible(model, env)

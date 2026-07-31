@@ -134,6 +134,32 @@ is that longer routes are strictly harder, since survival compounds: the
 clearing twice as many waves (2.70 -> 5.45). Train at the length you intend to
 measure.
 
+## Endless mode
+
+`--endless` turns the route into a lap. When a route would have finished, the
+lap is banked and the car keeps driving; only a crash ends the episode.
+
+The design decision that matters is what a lap does to the observation. The
+episode clock and wave counter **recycle**: `lap_step` returns to zero, the
+wave counter resets, and feature 6 (time remaining) climbs back to 1.0. Each
+lap therefore looks to the agent exactly like a fresh route, which is why a
+policy trained on fixed 45 s routes runs in endless mode without retraining. A
+naive implementation that let the clock run to zero and stay there would have
+pushed every policy off-distribution the moment the first route ended.
+
+A banked lap pays `COMPLETION_BONUS`, the same as finishing a fixed route,
+because it is the same achievement. The potential-based shaping is untouched:
+its potential is zeroed only on a genuine terminal state, and a lap is not one.
+
+`ENDLESS_STEP_LIMIT` (100,000 steps, ~2.8 simulated hours) still bounds the
+episode so a flawless policy cannot hang a training run.
+
+Completion rate carries no information in endless mode — every episode ends in
+a crash sooner or later — so `EvaluationSummary` gained `mean_laps`, and
+`evaluate --endless` reports laps and steps survived. The 2M-step model
+averages 1.80 laps across two 30-episode seed sets (1.87 and 1.73), roughly
+1,000 steps or 100 simulated seconds per life.
+
 ## Results
 
 `runs/game/v4-qrdqn-2m`: QR-DQN, 2,000,000 steps, 8 parallel environments,

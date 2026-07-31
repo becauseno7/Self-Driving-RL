@@ -413,16 +413,24 @@ class NeonRenderer:
         self._glass_panel(pygame.Rect(18, 16, self.WIDTH - 36, 66), alpha=226, radius=18)
         self._text("NEON HIGHWAY", self.font_medium, self.CYAN, 40, 29)
         version = NeonHighwayEnv.VERSION.rsplit("-", 1)[-1].upper()
-        self._text(
-            f"REINFORCEMENT LEARNING LAB / {version}", self.font_tiny, self.MUTED, 40, 55
-        )
+        subtitle = f"REINFORCEMENT LEARNING LAB / {version}"
+        if env.endless:
+            subtitle += " / ENDLESS"
+        self._text(subtitle, self.font_tiny, self.MUTED, 40, 55)
 
         total = int(env.hud_data.get("training_total", 0))
         step = int(env.hud_data.get("training_step", 0))
-        progress = min(step / total, 1.0) if total > 0 else env.step_count / env.max_episode_steps
+        progress = min(step / total, 1.0) if total > 0 else env.difficulty
         bar_x, bar_y, bar_width = 416, 48, 610
-        label = "TRAINING PROGRESS" if total > 0 else "EPISODE PROGRESS"
-        value = f"{step:,} / {total:,}" if total > 0 else f"{progress * 100:4.1f}%"
+        if total > 0:
+            label, value = "TRAINING PROGRESS", f"{step:,} / {total:,}"
+        elif env.endless:
+            # There is no finish line to count down to, so report distance
+            # survived instead of a percentage that resets every lap.
+            label = f"LAP {env.laps_completed + 1}  /  {env.ego_position / 1000.0:.2f} km"
+            value = f"{progress * 100:4.1f}%"
+        else:
+            label, value = "EPISODE PROGRESS", f"{progress * 100:4.1f}%"
         self._text(label, self.font_tiny, self.MUTED, bar_x, 27)
         self._text(value, self.font_tiny, self.TEXT, bar_x + bar_width - 92, 27)
         pygame.draw.rect(self.screen, (30, 41, 57), (bar_x, bar_y, bar_width, 10), border_radius=5)
@@ -522,6 +530,8 @@ class NeonRenderer:
         self._metric_pair("REAR TTC", rear_ttc, x + 22, y + 301)
         challenge_count = f"{env.challenges_resolved}/{len(env.challenge_steps)}"
         challenge_label = challenge_count if env.difficulty_mode == "hard" else "STANDARD"
+        if env.endless:
+            challenge_label = f"{challenge_label}  LAP {env.laps_completed + 1}"
         self._metric_pair("CHALLENGES", challenge_label, x + 22, y + 327)
 
         self._divider(x + 20, y + 359, width - 40)

@@ -246,6 +246,33 @@ seeds 30,000:
 Train on the length you intend to measure — pass the same `--seconds` to
 `learn` and the run will validate and evaluate at that length too.
 
+### Endless mode
+
+`--endless` removes the finish line. A finished route is banked as a lap and
+the car drives straight into the next one, so the only thing that restarts the
+episode is a crash:
+
+```powershell
+uv run sdr-game watch --difficulty hard --endless
+```
+
+Laps deliberately recycle the episode clock and the wave counter, so each lap
+looks to the agent exactly like a fresh route. A policy trained on fixed routes
+therefore stays in distribution and needs no retraining. A banked lap pays the
+same bonus as finishing a fixed route.
+
+The header shows the current lap and distance driven; `CHALLENGES` shows waves
+cleared this lap. Completion rate is meaningless here — every endless episode
+ends in a crash eventually — so `evaluate --endless` reports laps and steps
+survived instead:
+
+```powershell
+uv run sdr-game evaluate --endless --episodes 30 --seed 30000 50000
+```
+
+The 2M-step model averages 1.8 laps, about 1,000 steps or 100 simulated
+seconds, before it crashes.
+
 The 2M-step run takes about 45 minutes on the RTX 4070. It closed the
 directional gap from 14.0 points to 0.8, and 60% of its lane changes now carry a
 pedal input at the same time. Completion runs 55-69% depending on which

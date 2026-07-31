@@ -25,6 +25,8 @@ class EvaluationSummary:
     # Episodes that hit the absolute step limit without crashing or completing.
     # crash_rate + completion_rate + timeout_rate should always be 1.0.
     timeout_rate: float
+    # Endless mode never completes, so laps survived is the metric that moves.
+    mean_laps: float
     mean_episode_length: float
     mean_speed: float
     mean_min_ttc: float
@@ -52,6 +54,7 @@ def evaluate_in_env(
     crashes = 0
     completions = 0
     timeouts = 0
+    laps: list[int] = []
     action_counts: Counter[str] = Counter()
     collision_types: Counter[str] = Counter()
     episode_minimum_ttcs: list[float] = []
@@ -93,6 +96,7 @@ def evaluate_in_env(
         crashes += int(bool(final_info.get("crashed", False)))
         completions += int(bool(final_info.get("completed", truncated and not terminated)))
         timeouts += int(bool(final_info.get("timed_out", False)))
+        laps.append(int(final_info.get("laps_completed", 0)))
         collision = final_info.get("collision")
         if isinstance(collision, dict) and collision.get("kind"):
             collision_types[str(collision["kind"])] += 1
@@ -111,6 +115,7 @@ def evaluate_in_env(
         crash_rate=crashes / episodes,
         completion_rate=completions / episodes,
         timeout_rate=timeouts / episodes,
+        mean_laps=float(np.mean(laps)),
         mean_episode_length=float(np.mean(lengths)),
         mean_speed=float(np.mean(speeds)) if speeds else float("nan"),
         mean_min_ttc=(

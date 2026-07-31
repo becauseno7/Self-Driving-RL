@@ -104,6 +104,9 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
     CHALLENGE_INTERVAL_STEPS = 150
     CHALLENGE_CLEAR_STEPS = 70
     STEP_LIMIT_MARGIN = 150
+    # Endless mode still needs a ceiling so a flawless policy cannot hang a
+    # training run. 100,000 steps is ~2.8 simulated hours.
+    ENDLESS_STEP_LIMIT = 100_000
 
     # Terminal and event rewards. These are sized for SHAPING_GAMMA: at 0.995 a
     # bonus 450 steps away still retains ~10% of its value, so completing the
@@ -138,6 +141,7 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         traffic_per_lane: int = 4,
         difficulty_mode: str = "hard",
         episode_seconds: float | None = None,
+        endless: bool = False,
     ) -> None:
         super().__init__()
         if render_mode not in {None, "human", "rgb_array"}:
@@ -156,6 +160,10 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         self.episode_seconds = (
             self.EPISODE_SECONDS if episode_seconds is None else float(episode_seconds)
         )
+        # Endless mode repeats the route as laps instead of ending it. The
+        # agent keeps seeing a familiar countdown and wave cycle, so a policy
+        # trained on fixed routes stays in distribution.
+        self.endless = bool(endless)
         self.action_space = gym.spaces.Discrete(ACTION_COUNT)
 
         # Ego block, then six readings per lane. See _observation for the
@@ -200,6 +208,8 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         self.challenge_active = False
         self.challenge_started_at = 0
         self.challenge_name = "OPEN ROAD"
+        self.laps_completed = 0
+        self._lap_start_step = 0
         self._next_challenge_index = 0
         self._near_miss_active = False
         self._previous_potential = 0.0
@@ -239,7 +249,14 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
     @property
     def absolute_step_limit(self) -> int:
         """Hard cap so an episode can never run forever if a wave never stages."""
+        if self.endless:
+            return self.ENDLESS_STEP_LIMIT
         return self.max_episode_steps + self.STEP_LIMIT_MARGIN
+
+    @property
+    def lap_step(self) -> int:
+        """Steps into the current lap. Identical to step_count off endless."""
+        return self.step_count - self._lap_start_step
 
     def _invalidate_sensors(self) -> None:
         self._sensor_cache = None
@@ -258,7 +275,7 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
     @property
     def difficulty(self) -> float:
         """Traffic pressure rises gently during an episode."""
-        return float(np.clip(self.step_count / self.max_episode_steps, 0.0, 1.0))
+        return float(np.clip(self.lap_step / self.max_episode_steps, 0.0, 1.0))
 
     def reset(
         self,
@@ -297,6 +314,8 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         self.challenge_active = False
         self.challenge_started_at = 0
         self.challenge_name = "OPEN ROAD"
+        self.laps_completed = 0
+        self._lap_start_step = 0
         self._next_challenge_index = 0
         self._near_miss_active = False
         self._spawn_traffic()
@@ -373,7 +392,7 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         challenge_steps = self.challenge_steps
         if self._next_challenge_index >= len(challenge_steps):
             return
-        if self.step_count < challenge_steps[self._next_challenge_index]:
+        if self.lap_step < challenge_steps[self._next_challenge_index]:
             return
         if abs(self.lane_position - self.target_lane) >= 0.05:
             return
@@ -452,11 +471,22 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
             self.difficulty_mode != "hard"
             or self.challenges_resolved == len(self.challenge_steps)
         )
-        self.completed = (
-            self.step_count >= self.max_episode_steps
+        route_finished = (
+            self.lap_step >= self.max_episode_steps
             and not self.crashed
             and all_challenges_cleared
         )
+        # Endless mode banks the finished route as a lap and drives straight
+        # into the next one; only a crash ends the episode.
+        lap_completed = route_finished and self.endless
+        if lap_completed:
+            self.laps_completed += 1
+            self._lap_start_step = self.step_count
+            self._next_challenge_index = 0
+            self.challenges_resolved = 0
+            self.challenge_name = f"LAP {self.laps_completed} COMPLETE"
+        action_result["lap_completed"] = lap_completed
+        self.completed = route_finished and not self.endless
         # A wave that never stages would otherwise leave `completed` False
         # forever, and nothing else ends the episode. Resolved before the
         # reward so the timeout penalty lands on the step that ends it.
@@ -863,6 +893,10 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
             components["safety"] -= self.UNSAFE_LANE_CHANGE_COST
         if action_result.get("challenge_resolved", False):
             components["safety"] += self.CHALLENGE_BONUS
+        if action_result.get("lap_completed", False):
+            # Same reward as finishing a fixed route, because it is the same
+            # achievement; endless mode just does not stop afterwards.
+            components["progress"] += self.COMPLETION_BONUS
         if action_result["lane_change_requested"]:
             components["comfort"] -= 0.012
         if action_result["speed_target_changed"]:
@@ -957,7 +991,7 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
             self.target_lane / (self.LANES - 1),
             float(np.clip(abs(self.lane_position - self.target_lane), 0.0, 1.0)),
             float(np.clip(acceleration, -1.0, 1.0)),
-            float(np.clip(1.0 - self.step_count / self.max_episode_steps, 0.0, 1.0)),
+            float(np.clip(1.0 - self.lap_step / self.max_episode_steps, 0.0, 1.0)),
             1.0 if (hard and self.challenge_active) else 0.0,
             (self.challenges_resolved / waves) if hard else 1.0,
         ]
@@ -989,6 +1023,8 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
             "crashed": self.crashed,
             "completed": self.completed,
             "timed_out": self.timed_out,
+            "endless": self.endless,
+            "laps_completed": self.laps_completed,
             "lane": self.lane_position,
             "target_lane": self.target_lane,
             "action": ACTION_NAMES[self.last_action],
