@@ -816,14 +816,27 @@ wheels = [
 ]
 
 [[package]]
+name = "sb3-contrib"
+version = "2.9.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "stable-baselines3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8f/8e/476222d88ba09dce0feebf6fb30b55e4dd0c80be5b19dc7b40d12d70752a/sb3_contrib-2.9.0.tar.gz", hash = "sha256:6e839c669552ecb3deb616a42ea98ed5e6c599eb5ac5f86232415b87a3873699", size = 90312, upload-time = "2026-06-15T17:06:08.8Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c3/06/add3f1d6250f58ca493830ddb2118975aa3c4433bc07662d5ac5089eb691/sb3_contrib-2.9.0-py3-none-any.whl", hash = "sha256:b492b2be792f8f8214ff6b984e94812dc877f809ae82302cbe00626442ae316a", size = 93042, upload-time = "2026-06-15T17:06:07.452Z" },
+]
+
+[[package]]
 name = "self-driving-rl"
-version = "0.2.0"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "gymnasium" },
     { name = "highway-env" },
     { name = "numpy" },
     { name = "pygame-ce" },
+    { name = "sb3-contrib" },
     { name = "stable-baselines3" },
     { name = "tensorboard" },
     { name = "torch" },
@@ -843,6 +856,7 @@ requires-dist = [
     { name = "pygame-ce", specifier = "==2.5.7" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "==8.4.1" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.12.7" },
+    { name = "sb3-contrib", specifier = "==2.9.0" },
     { name = "stable-baselines3", specifier = "==2.9.0" },
     { name = "tensorboard", specifier = "==2.20.0" },
     { name = "torch", specifier = "==2.13.0", index = "https://download.pytorch.org/whl/cu126" },

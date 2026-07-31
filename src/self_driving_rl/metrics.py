@@ -22,9 +22,15 @@ class EvaluationSummary:
     std_return: float
     crash_rate: float
     completion_rate: float
+    # Episodes that hit the absolute step limit without crashing or completing.
+    # crash_rate + completion_rate + timeout_rate should always be 1.0.
+    timeout_rate: float
     mean_episode_length: float
     mean_speed: float
     mean_min_ttc: float
+    mean_min_rear_ttc: float
+    mean_challenges_presented: float
+    mean_challenges_resolved: float
     action_counts: dict[str, int]
     collision_types: dict[str, int]
 
@@ -45,9 +51,13 @@ def evaluate_in_env(
     speeds: list[float] = []
     crashes = 0
     completions = 0
+    timeouts = 0
     action_counts: Counter[str] = Counter()
     collision_types: Counter[str] = Counter()
     episode_minimum_ttcs: list[float] = []
+    episode_minimum_rear_ttcs: list[float] = []
+    challenges_presented: list[int] = []
+    challenges_resolved: list[int] = []
 
     for episode in range(episodes):
         episode_seed = seed + episode
@@ -58,6 +68,7 @@ def evaluate_in_env(
         episode_length = 0
         final_info: dict[str, Any] = {}
         minimum_ttc = float("inf")
+        minimum_rear_ttc = float("inf")
 
         while not (terminated or truncated):
             action = int(policy(observation))
@@ -72,16 +83,25 @@ def evaluate_in_env(
                 ttc = float(final_info["ttc"])
                 if np.isfinite(ttc):
                     minimum_ttc = min(minimum_ttc, ttc)
+            if "rear_ttc" in final_info:
+                rear_ttc = float(final_info["rear_ttc"])
+                if np.isfinite(rear_ttc):
+                    minimum_rear_ttc = min(minimum_rear_ttc, rear_ttc)
 
         returns.append(episode_return)
         lengths.append(episode_length)
         crashes += int(bool(final_info.get("crashed", False)))
         completions += int(bool(final_info.get("completed", truncated and not terminated)))
+        timeouts += int(bool(final_info.get("timed_out", False)))
         collision = final_info.get("collision")
         if isinstance(collision, dict) and collision.get("kind"):
             collision_types[str(collision["kind"])] += 1
         if np.isfinite(minimum_ttc):
             episode_minimum_ttcs.append(minimum_ttc)
+        if np.isfinite(minimum_rear_ttc):
+            episode_minimum_rear_ttcs.append(minimum_rear_ttc)
+        challenges_presented.append(int(final_info.get("challenges_presented", 0)))
+        challenges_resolved.append(int(final_info.get("challenges_resolved", 0)))
 
     return EvaluationSummary(
         episodes=episodes,
@@ -90,11 +110,19 @@ def evaluate_in_env(
         std_return=float(np.std(returns)),
         crash_rate=crashes / episodes,
         completion_rate=completions / episodes,
+        timeout_rate=timeouts / episodes,
         mean_episode_length=float(np.mean(lengths)),
         mean_speed=float(np.mean(speeds)) if speeds else float("nan"),
         mean_min_ttc=(
             float(np.mean(episode_minimum_ttcs)) if episode_minimum_ttcs else float("nan")
         ),
+        mean_min_rear_ttc=(
+            float(np.mean(episode_minimum_rear_ttcs))
+            if episode_minimum_rear_ttcs
+            else float("nan")
+        ),
+        mean_challenges_presented=float(np.mean(challenges_presented)),
+        mean_challenges_resolved=float(np.mean(challenges_resolved)),
         action_counts=dict(sorted(action_counts.items())),
         collision_types=dict(sorted(collision_types.items())),
     )

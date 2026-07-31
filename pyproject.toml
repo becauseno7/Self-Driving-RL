@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "self-driving-rl"
-version = "0.2.0"
+version = "0.4.0"
 description = "A learning-focused reinforcement learning project for simulated driving."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -13,6 +13,7 @@ dependencies = [
     "highway-env==1.12.0",
     "numpy==2.3.2",
     "pygame-ce==2.5.7",
+    "sb3-contrib==2.9.0",
     "stable-baselines3==2.9.0",
     "tensorboard==2.20.0",
     "torch==2.13.0",

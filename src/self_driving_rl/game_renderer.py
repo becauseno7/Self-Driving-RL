@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
 
 import numpy as np
 import pygame
 
-if TYPE_CHECKING:
-    from self_driving_rl.game_env import NeonHighwayEnv
+from self_driving_rl.game_env import (
+    ACTION_COUNT,
+    NeonHighwayEnv,
+    decode_action,
+    encode_action,
+)
 
 
 class NeonRenderer:
@@ -145,7 +148,7 @@ class NeonRenderer:
         self._draw_left_dashboard(env)
         self._draw_right_dashboard(env)
         self._draw_action_strip(env)
-        self._draw_footer()
+        self._draw_footer(env)
 
         if env.crashed:
             self._draw_crash_overlay(env, crash_phase)
@@ -243,10 +246,15 @@ class NeonRenderer:
 
     def _draw_sensors(self, env: NeonHighwayEnv) -> None:
         overlay = pygame.Surface((self.WIDTH, self.HEIGHT), pygame.SRCALPHA)
-        ego = (int(self._lane_center_x(env, env.lane_position)), self.EGO_Y - 26)
-        for lane, (ahead_gap, relative_speed, _behind_gap) in enumerate(env.lane_sensors()):
+        ego_x = int(self._lane_center_x(env, env.lane_position))
+        front_origin = (ego_x, self.EGO_Y - 26)
+        rear_origin = (ego_x, self.EGO_Y + 26)
+        for lane, (ahead_gap, relative_speed, behind_gap, behind_relative) in enumerate(
+            env.lane_sensors()
+        ):
+            lane_x = int(self._lane_center_x(env, float(lane)))
             end_y = max(84, int(self.EGO_Y - ahead_gap * self.PIXELS_PER_METER))
-            end = (int(self._lane_center_x(env, float(lane))), end_y)
+            end = (lane_x, end_y)
             closing = max(-relative_speed, 0.0)
             ttc = ahead_gap / closing if closing > 0.1 else float("inf")
             if ttc < 2.0:
@@ -255,10 +263,32 @@ class NeonRenderer:
                 color = (*self.AMBER, 105)
             else:
                 color = (*self.CYAN, 52)
-            pygame.draw.aaline(overlay, color, ego, end)
+            pygame.draw.aaline(overlay, color, front_origin, end)
             pygame.draw.circle(overlay, color, end, 8, 2)
             label = self.font_tiny.render(f"{ahead_gap:02.0f}m", True, color[:3])
             overlay.blit(label, (end[0] + 10, end[1] - 8))
+
+            rear_end_y = min(
+                self.HEIGHT - 30,
+                int(self.EGO_Y + behind_gap * self.PIXELS_PER_METER),
+            )
+            rear_end = (lane_x, rear_end_y)
+            rear_closing = max(behind_relative, 0.0)
+            rear_ttc = behind_gap / rear_closing if rear_closing > 0.1 else float("inf")
+            if rear_ttc < 2.0:
+                rear_color = (*self.RED, 150)
+            elif rear_ttc < 4.0:
+                rear_color = (*self.AMBER, 105)
+            else:
+                rear_color = (*self.PINK, 52)
+            pygame.draw.aaline(overlay, rear_color, rear_origin, rear_end)
+            pygame.draw.circle(overlay, rear_color, rear_end, 8, 2)
+            rear_label = self.font_tiny.render(
+                f"{behind_gap:02.0f}m",
+                True,
+                rear_color[:3],
+            )
+            overlay.blit(rear_label, (rear_end[0] + 10, rear_end[1] - 8))
         self.screen.blit(overlay, (0, 0))
 
     def _draw_traffic(self, env: NeonHighwayEnv) -> None:
@@ -382,7 +412,10 @@ class NeonRenderer:
     def _draw_header(self, env: NeonHighwayEnv) -> None:
         self._glass_panel(pygame.Rect(18, 16, self.WIDTH - 36, 66), alpha=226, radius=18)
         self._text("NEON HIGHWAY", self.font_medium, self.CYAN, 40, 29)
-        self._text("REINFORCEMENT LEARNING LAB / V2", self.font_tiny, self.MUTED, 40, 55)
+        version = NeonHighwayEnv.VERSION.rsplit("-", 1)[-1].upper()
+        self._text(
+            f"REINFORCEMENT LEARNING LAB / {version}", self.font_tiny, self.MUTED, 40, 55
+        )
 
         total = int(env.hud_data.get("training_total", 0))
         step = int(env.hud_data.get("training_step", 0))
@@ -470,8 +503,9 @@ class NeonRenderer:
         self._pedal_bar("BRAKE", env.brake, x + 164, y + 174, 126, self.RED)
 
         self._divider(x + 20, y + 198, width - 40)
-        self._section_title("SAFETY RADAR", x + 22, y + 215, self.AMBER)
+        self._section_title("360 SAFETY RADAR", x + 22, y + 215, self.AMBER)
         threat = env.current_threat()
+        rear_threat = env.rear_threat()
         threat_color = (
             self.RED
             if threat["level"] > 0.65
@@ -480,29 +514,43 @@ class NeonRenderer:
             else self.GREEN
         )
         self._gauge(x + 22, y + 250, width - 44, threat["level"], threat_color)
-        ttc_label = f"{threat['ttc']:.1f}s" if np.isfinite(threat["ttc"]) else "CLEAR"
-        self._metric_pair("TIME TO IMPACT", ttc_label, x + 22, y + 275)
-        self._metric_pair("FRONT GAP", f"{threat['gap']:.1f}m", x + 22, y + 301)
-        self._metric_pair("DIFFICULTY", f"{env.difficulty * 100:.0f}%", x + 22, y + 327)
+        front_ttc = f"{threat['ttc']:.1f}s" if np.isfinite(threat["ttc"]) else "CLEAR"
+        rear_ttc = (
+            f"{rear_threat['ttc']:.1f}s" if np.isfinite(rear_threat["ttc"]) else "CLEAR"
+        )
+        self._metric_pair("FRONT TTC", front_ttc, x + 22, y + 275)
+        self._metric_pair("REAR TTC", rear_ttc, x + 22, y + 301)
+        challenge_count = f"{env.challenges_resolved}/{len(env.challenge_steps)}"
+        challenge_label = challenge_count if env.difficulty_mode == "hard" else "STANDARD"
+        self._metric_pair("CHALLENGES", challenge_label, x + 22, y + 327)
 
         self._divider(x + 20, y + 359, width - 40)
         self._section_title("REWARD SIGNAL", x + 22, y + 375, self.PINK)
         components = env.last_reward_components
-        component_colors = [self.CYAN, self.AMBER, (179, 125, 246), self.RED, self.GREEN]
-        for index, name in enumerate(["progress", "safety", "comfort", "rules", "terminal"]):
+        component_colors = [
+            self.CYAN,
+            self.AMBER,
+            (120, 200, 255),
+            (179, 125, 246),
+            self.RED,
+            self.GREEN,
+        ]
+        for index, name in enumerate(
+            ["progress", "safety", "shaping", "comfort", "rules", "terminal"]
+        ):
             self._reward_bar(
                 name.upper(),
                 float(components.get(name, 0.0)),
                 x + 22,
-                y + 406 + index * 22,
+                y + 402 + index * 19,
                 width - 44,
                 component_colors[index],
             )
 
-        self._divider(x + 20, y + 526, width - 40)
-        self._section_title("ACTION VALUES / Q", x + 22, y + 542, self.CYAN)
-        q_values = [float(value) for value in env.hud_data.get("q_values", [0.0] * 5)]
-        self._draw_q_values(env, q_values, x + 22, y + 574, width - 44)
+        self._divider(x + 20, y + 512, width - 40)
+        self._section_title("ACTION VALUES / Q", x + 22, y + 524, self.CYAN)
+        q_values = [float(value) for value in env.hud_data.get("q_values", [0.0] * ACTION_COUNT)]
+        self._draw_q_values(env, q_values, x + 22, y + 568, width - 44)
 
     def _draw_q_values(
         self,
@@ -512,49 +560,88 @@ class NeonRenderer:
         y: int,
         width: int,
     ) -> None:
-        if len(q_values) != 5:
-            q_values = [0.0] * 5
+        """Draw the nine action values as a steer x pedal grid.
+
+        A flat list of nine rows no longer fits the panel, and the grid shows
+        the structure the action space actually has.
+        """
+        if len(q_values) != ACTION_COUNT:
+            q_values = [0.0] * ACTION_COUNT
         minimum, maximum = min(q_values), max(q_values)
         spread = maximum - minimum
-        names = ["LEFT", "HOLD", "RIGHT", "SPD+", "SPD-"]
-        for index, (name, value) in enumerate(zip(names, q_values, strict=True)):
-            row_y = y + index * 17
-            normalized = (value - minimum) / spread if spread > 1e-6 else 0.5
-            selected = env.last_action == index
-            color = self.CYAN if selected else (76, 91, 112)
-            self._text(name, self.font_tiny, self.TEXT if selected else self.MUTED, x, row_y - 3)
-            pygame.draw.rect(self.screen, (25, 35, 49), (x + 55, row_y, 140, 7), border_radius=3)
-            pygame.draw.rect(
-                self.screen,
-                color,
-                (x + 55, row_y, max(2, int(140 * normalized)), 7),
-                border_radius=3,
+        best = q_values.index(maximum)
+        selected_steer, _ = decode_action(env.last_action)
+
+        cell_width = (width - 54) // 3
+        for pedal, label in enumerate(["BRAKE", "COAST", "GAS"]):
+            self._text(
+                label, self.font_tiny, self.MUTED, x + 54 + pedal * cell_width, y - 14
             )
-            self._text(f"{value:+.2f}", self.font_tiny, self.TEXT, x + 210, row_y - 4)
+        for steer, label in enumerate(["LEFT", "KEEP", "RIGHT"]):
+            row_y = y + steer * 22
+            active_row = steer == selected_steer
+            self._text(
+                label,
+                self.font_tiny,
+                self.TEXT if active_row else self.MUTED,
+                x,
+                row_y + 1,
+            )
+            for pedal in range(3):
+                action = encode_action(steer, pedal)
+                value = q_values[action]
+                normalized = (value - minimum) / spread if spread > 1e-6 else 0.5
+                cell_x = x + 54 + pedal * cell_width
+                bar_width = cell_width - 8
+                is_best = action == best
+                color = self.CYAN if is_best else (76, 91, 112)
+                pygame.draw.rect(
+                    self.screen, (25, 35, 49), (cell_x, row_y, bar_width, 7), border_radius=3
+                )
+                pygame.draw.rect(
+                    self.screen,
+                    color,
+                    (cell_x, row_y, max(2, int(bar_width * normalized)), 7),
+                    border_radius=3,
+                )
+                self._text(
+                    f"{value:+.1f}",
+                    self.font_tiny,
+                    self.TEXT if is_best else self.MUTED,
+                    cell_x,
+                    row_y + 8,
+                )
 
     def _draw_action_strip(self, env: NeonHighwayEnv) -> None:
+        """Steering and pedal are chosen together, so each gets its own row."""
         x, y, width = self.ROAD_LEFT + 25, self.HEIGHT - 66, self.ROAD_WIDTH - 50
         self._glass_panel(pygame.Rect(x, y, width, 43), alpha=220, radius=15)
-        labels = ["LANE LEFT", "HOLD TARGET", "LANE RIGHT", "SPEED +", "SPEED -"]
-        button_width = (width - 24) // 5
-        for index, label in enumerate(labels):
-            button_x = x + 8 + index * button_width
-            active = env.last_action == index
-            color = self.CYAN if active else (57, 68, 85)
-            pygame.draw.rect(
-                self.screen,
-                color,
-                (button_x, y + 8, button_width - 6, 27),
-                border_radius=13,
-            )
-            text_color = (5, 21, 28) if active else (193, 204, 220)
-            surface = self.font_tiny.render(label, True, text_color)
-            self.screen.blit(
-                surface,
-                surface.get_rect(center=(button_x + (button_width - 6) // 2, y + 21)),
-            )
+        steer, pedal = decode_action(env.last_action)
+        groups = (
+            (["LANE LEFT", "KEEP LANE", "LANE RIGHT"], steer, 0),
+            (["BRAKE", "COAST", "GAS"], pedal, 1),
+        )
+        half = (width - 24) // 2
+        for labels, selected, column in groups:
+            button_width = half // 3
+            for index, label in enumerate(labels):
+                button_x = x + 8 + column * half + index * button_width
+                active = index == selected
+                color = self.CYAN if active else (57, 68, 85)
+                pygame.draw.rect(
+                    self.screen,
+                    color,
+                    (button_x, y + 8, button_width - 6, 27),
+                    border_radius=13,
+                )
+                text_color = (5, 21, 28) if active else (193, 204, 220)
+                surface = self.font_tiny.render(label, True, text_color)
+                self.screen.blit(
+                    surface,
+                    surface.get_rect(center=(button_x + (button_width - 6) // 2, y + 21)),
+                )
 
-    def _draw_footer(self) -> None:
+    def _draw_footer(self, env: NeonHighwayEnv) -> None:
         self._text(
             "SPACE  pause       H  toggle sensors       ESC  save and exit",
             self.font_tiny,
@@ -562,11 +649,12 @@ class NeonRenderer:
             22,
             self.HEIGHT - 20,
         )
+        observations = env.observation_space.shape[0]
         self._text(
-            "OBSERVATION: KINEMATICS + TARGET / POLICY: DQN",
+            f"OBSERVATION: {observations} VALUES / ACTIONS: STEER x PEDAL",
             self.font_tiny,
             self.MUTED,
-            1080,
+            1030,
             self.HEIGHT - 20,
         )
 
@@ -644,7 +732,7 @@ class NeonRenderer:
         self._glass_panel(pygame.Rect(500, 290, 440, 170), alpha=232, radius=22)
         self._center_text("ROUTE COMPLETE", self.font_large, self.GREEN, 330)
         self._center_text(
-            f"Survived {env.EPISODE_SECONDS:.0f}s  |  Return {env.episode_return:+.2f}",
+            f"Cleared {env.challenges_resolved} waves  |  Return {env.episode_return:+.2f}",
             self.font_small_bold,
             self.TEXT,
             388,

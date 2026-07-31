@@ -10,22 +10,31 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import gymnasium as gym
 import numpy as np
 import torch as th
+from sb3_contrib import QRDQN
 from stable_baselines3 import DQN
+from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 
-from self_driving_rl.game_env import NeonHighwayEnv
+from self_driving_rl.game_env import ACTION_COUNT, NeonHighwayEnv
 from self_driving_rl.metrics import evaluate_in_env
+from self_driving_rl.symmetry import MirrorSymmetry
 
+# gamma must stay in step with NeonHighwayEnv.SHAPING_GAMMA: episodes are 450
+# steps, so the 0.98 used through V3 gave a 50-step horizon and made the
+# route-completion bonus worth 0.0006 at the start of an episode.
 GAME_DQN_CONFIG: dict[str, Any] = {
     "policy_kwargs": {"net_arch": [128, 128]},
     "learning_rate": 7e-4,
     "buffer_size": 50_000,
     "learning_starts": 750,
     "batch_size": 64,
-    "gamma": 0.98,
+    "gamma": 0.995,
     "train_freq": 4,
     "gradient_steps": 1,
     "target_update_interval": 500,
@@ -40,7 +49,7 @@ HIGH_COMPUTE_DQN_CONFIG: dict[str, Any] = {
     "buffer_size": 250_000,
     "learning_starts": 5_000,
     "batch_size": 128,
-    "gamma": 0.98,
+    "gamma": 0.995,
     "train_freq": 4,
     "gradient_steps": 1,
     "target_update_interval": 2_000,
@@ -49,10 +58,88 @@ HIGH_COMPUTE_DQN_CONFIG: dict[str, Any] = {
     "exploration_final_eps": 0.02,
 }
 
+# Sized for a many-env headless run. V3 did 0.25 gradient steps per env step
+# from a single environment, which left the GPU mostly idle; with --envs 8 this
+# doubles the replay ratio while collecting experience eight times faster.
+GPU_DQN_CONFIG: dict[str, Any] = {
+    "policy_kwargs": {"net_arch": [256, 256]},
+    "learning_rate": 3e-4,
+    "buffer_size": 500_000,
+    "learning_starts": 20_000,
+    "batch_size": 512,
+    "gamma": 0.995,
+    "train_freq": (1, "step"),
+    "gradient_steps": 4,
+    "target_update_interval": 5_000,
+    "exploration_fraction": 0.2,
+    "exploration_initial_eps": 1.0,
+    "exploration_final_eps": 0.02,
+}
+
 DQN_PRESETS = {
     "standard": GAME_DQN_CONFIG,
     "high": HIGH_COMPUTE_DQN_CONFIG,
+    "gpu": GPU_DQN_CONFIG,
 }
+
+ALGORITHMS: dict[str, type[OffPolicyAlgorithm]] = {"dqn": DQN, "qrdqn": QRDQN}
+
+# QR-DQN learns a distribution over returns per action instead of a single mean.
+# SB3's DQN has no Double-Q correction, and its overestimation showed up in V3
+# as a policy that had all but abandoned one of the two escape directions.
+QRDQN_POLICY_KWARGS: dict[str, Any] = {"n_quantiles": 64}
+
+
+def build_algorithm_kwargs(algorithm: str, dqn_config: dict[str, Any]) -> dict[str, Any]:
+    config = {key: value for key, value in dqn_config.items()}
+    if algorithm == "qrdqn":
+        policy_kwargs = dict(config.get("policy_kwargs", {}))
+        policy_kwargs.update(QRDQN_POLICY_KWARGS)
+        config["policy_kwargs"] = policy_kwargs
+    return config
+
+
+def load_model(path: Path, device: str = "cpu") -> OffPolicyAlgorithm:
+    """Load a checkpoint without needing to be told which algorithm wrote it."""
+    errors: list[str] = []
+    for name, algorithm_class in ALGORITHMS.items():
+        try:
+            return algorithm_class.load(path, device=device)
+        except (OSError, ValueError, KeyError, RuntimeError, AttributeError) as error:
+            errors.append(f"{name}: {error}")
+    raise SystemExit(f"Could not load {path} as any known algorithm.\n" + "\n".join(errors))
+
+
+def action_values(model: OffPolicyAlgorithm, observation_tensor: th.Tensor) -> np.ndarray:
+    """Per-action values for the HUD, for both a Q-net and a quantile net."""
+    with th.no_grad():
+        if isinstance(model, QRDQN):
+            # (batch, quantiles, actions) -> mean over quantiles is the Q value.
+            values = model.quantile_net(observation_tensor).mean(dim=1)
+        else:
+            values = model.q_net(observation_tensor)
+    return values.detach().cpu().numpy()[0]
+
+
+def make_training_env(
+    difficulty_mode: str,
+    seed: int,
+    index: int,
+    mirror: bool,
+    episode_seconds: float | None = None,
+) -> Any:
+    """Factory for SubprocVecEnv workers; each env gets its own seed stream."""
+
+    def _init() -> Monitor:
+        env: gym.Env = NeonHighwayEnv(
+            difficulty_mode=difficulty_mode, episode_seconds=episode_seconds
+        )
+        if mirror:
+            env = MirrorSymmetry(env)
+        env.reset(seed=seed + 1_000 * index)
+        return Monitor(env)
+
+    return _init
 
 
 class GameHudCallback(BaseCallback):
@@ -69,10 +156,9 @@ class GameHudCallback(BaseCallback):
     def _q_values(self) -> list[float]:
         observations = self.locals.get("new_obs")
         if observations is None:
-            return [0.0] * 5
+            return [0.0] * ACTION_COUNT
         observation_tensor, _ = self.model.policy.obs_to_tensor(observations)
-        with th.no_grad():
-            values = self.model.q_net(observation_tensor).detach().cpu().numpy()[0]
+        values = action_values(self.model, observation_tensor)
         return [float(value) for value in values]
 
     def _on_step(self) -> bool:
@@ -119,12 +205,16 @@ class SafetyEvalCallback(BaseCallback):
         eval_freq: int,
         episodes: int,
         seed: int,
+        difficulty_mode: str,
+        episode_seconds: float | None = None,
     ) -> None:
         super().__init__()
+        self.episode_seconds = episode_seconds
         self.run_dir = run_dir
         self.eval_freq = eval_freq
         self.episodes = episodes
         self.seed = seed
+        self.difficulty_mode = difficulty_mode
         self.next_evaluation = eval_freq
         self.best_score = (float("-inf"), float("-inf"))
         self.history: list[dict[str, Any]] = []
@@ -133,7 +223,13 @@ class SafetyEvalCallback(BaseCallback):
         if self.num_timesteps < self.next_evaluation:
             return True
 
-        result = _evaluation(self.model, episodes=self.episodes, seed=self.seed)
+        result = _evaluation(
+            self.model,
+            episodes=self.episodes,
+            seed=self.seed,
+            difficulty_mode=self.difficulty_mode,
+            episode_seconds=self.episode_seconds,
+        )
         record = {"timesteps": self.num_timesteps, **result}
         self.history.append(record)
         (self.run_dir / "validation_history.json").write_text(
@@ -167,6 +263,17 @@ def build_parser() -> argparse.ArgumentParser:
     random_parser.add_argument("--episodes", type=int, default=10)
     random_parser.add_argument("--seed", type=int, default=7)
     random_parser.add_argument("--fps", type=int, default=60)
+    random_parser.add_argument(
+        "--difficulty",
+        choices=sorted(NeonHighwayEnv.DIFFICULTY_MODES),
+        default="hard",
+    )
+    random_parser.add_argument(
+        "--seconds",
+        type=float,
+        default=None,
+        help="Route length in simulated seconds (default 45; a wave is added every 15 s)",
+    )
 
     learn_parser = subparsers.add_parser("learn", help="Watch DQN learn while it drives")
     learn_parser.add_argument("--timesteps", type=int, default=30_000)
@@ -176,11 +283,30 @@ def build_parser() -> argparse.ArgumentParser:
     learn_parser.add_argument("--eval-episodes", type=int, default=20)
     learn_parser.add_argument("--headless", action="store_true", help="Train as fast as possible")
     learn_parser.add_argument(
+        "--envs",
+        type=int,
+        default=1,
+        help="Parallel environments (headless only; 8-16 keeps a modern GPU busy)",
+    )
+    learn_parser.add_argument(
         "--preset",
         choices=sorted(DQN_PRESETS),
         default="standard",
         help="DQN capacity/training preset",
     )
+    learn_parser.add_argument(
+        "--algo",
+        choices=sorted(ALGORITHMS),
+        default="dqn",
+        help="qrdqn is distributional and does not overestimate like plain DQN",
+    )
+    learn_parser.add_argument(
+        "--no-mirror",
+        dest="mirror",
+        action="store_false",
+        help="Disable random left/right mirroring of training episodes",
+    )
+    learn_parser.set_defaults(mirror=True)
     learn_parser.add_argument(
         "--device",
         choices=["auto", "cpu", "cuda"],
@@ -190,12 +316,60 @@ def build_parser() -> argparse.ArgumentParser:
     learn_parser.add_argument("--validation-freq", type=int, default=25_000)
     learn_parser.add_argument("--validation-episodes", type=int, default=20)
     learn_parser.add_argument("--validation-seed", type=int, default=20_000)
+    learn_parser.add_argument(
+        "--difficulty",
+        choices=sorted(NeonHighwayEnv.DIFFICULTY_MODES),
+        default="hard",
+    )
+    learn_parser.add_argument(
+        "--seconds",
+        type=float,
+        default=None,
+        help="Route length in simulated seconds (default 45; a wave is added every 15 s)",
+    )
+
+    evaluate_parser = subparsers.add_parser(
+        "evaluate",
+        help="Score a trained model headlessly on fixed traffic seeds",
+    )
+    evaluate_parser.add_argument("--model", type=Path, default=None)
+    evaluate_parser.add_argument("--episodes", type=int, default=100)
+    evaluate_parser.add_argument(
+        "--seed",
+        type=int,
+        nargs="+",
+        default=[10_000],
+        help="One or more starting seeds; each is scored as a separate set",
+    )
+    evaluate_parser.add_argument("--output", type=Path, default=None)
+    evaluate_parser.add_argument(
+        "--difficulty",
+        choices=sorted(NeonHighwayEnv.DIFFICULTY_MODES),
+        default="hard",
+    )
+    evaluate_parser.add_argument(
+        "--seconds",
+        type=float,
+        default=None,
+        help="Route length in simulated seconds (default 45; a wave is added every 15 s)",
+    )
 
     watch_parser = subparsers.add_parser("watch", help="Watch the newest or selected trained model")
     watch_parser.add_argument("--model", type=Path, default=None)
     watch_parser.add_argument("--episodes", type=int, default=10)
     watch_parser.add_argument("--seed", type=int, default=10_000)
     watch_parser.add_argument("--fps", type=int, default=60)
+    watch_parser.add_argument(
+        "--difficulty",
+        choices=sorted(NeonHighwayEnv.DIFFICULTY_MODES),
+        default="hard",
+    )
+    watch_parser.add_argument(
+        "--seconds",
+        type=float,
+        default=None,
+        help="Route length in simulated seconds (default 45; a wave is added every 15 s)",
+    )
     return parser
 
 
@@ -221,7 +395,9 @@ def run_policy(
         terminated = truncated = False
         while not (terminated or truncated) and not env.quit_requested:
             q_values = (
-                q_values_provider(observation) if q_values_provider is not None else [0.0] * 5
+                q_values_provider(observation)
+                if q_values_provider is not None
+                else [0.0] * ACTION_COUNT
             )
             action = int(choose_action(observation))
             env.hud_data.update(
@@ -250,7 +426,12 @@ def run_policy(
 
 
 def random_mode(args: argparse.Namespace) -> None:
-    env = NeonHighwayEnv(render_mode="human", render_fps=args.fps)
+    env = NeonHighwayEnv(
+        render_mode="human",
+        render_fps=args.fps,
+        difficulty_mode=args.difficulty,
+        episode_seconds=args.seconds,
+    )
     env.action_space.seed(args.seed)
     try:
         run_policy(
@@ -266,12 +447,14 @@ def random_mode(args: argparse.Namespace) -> None:
 
 
 def _evaluation(
-    model: DQN,
+    model: BaseAlgorithm,
     *,
     episodes: int,
     seed: int,
+    difficulty_mode: str,
+    episode_seconds: float | None = None,
 ) -> dict[str, Any]:
-    env = NeonHighwayEnv()
+    env = NeonHighwayEnv(difficulty_mode=difficulty_mode, episode_seconds=episode_seconds)
     try:
         _ensure_model_compatible(model, env)
         return evaluate_in_env(
@@ -284,29 +467,45 @@ def _evaluation(
         env.close()
 
 
-def _ensure_model_compatible(model: DQN, env: NeonHighwayEnv) -> None:
+HELP_TRAIN_FRESH = (
+    "Run `uv run sdr-game watch` without --model to automatically select a "
+    "compatible checkpoint, or train a fresh model with: "
+    "uv run sdr-game learn --preset gpu --algo qrdqn --headless --envs 8 --timesteps 2000000"
+)
+
+
+def _model_is_compatible(model: BaseAlgorithm, env: NeonHighwayEnv) -> bool:
+    return (
+        getattr(model.observation_space, "shape", None) == env.observation_space.shape
+        and getattr(model.action_space, "n", None) == env.action_space.n
+    )
+
+
+def _ensure_model_compatible(model: BaseAlgorithm, env: NeonHighwayEnv) -> None:
+    if _model_is_compatible(model, env):
+        return
     model_shape = getattr(model.observation_space, "shape", None)
-    environment_shape = env.observation_space.shape
-    if model_shape != environment_shape:
-        raise SystemExit(
-            "Model/environment mismatch: "
-            f"the model expects observations shaped {model_shape}, but "
-            f"{env.VERSION} provides {environment_shape}. "
-            "Run `uv run sdr-game watch` without --model to automatically select a "
-            "compatible checkpoint, or train a fresh V2 model with: "
-            "uv run sdr-game learn --timesteps 30000"
-        )
+    model_actions = getattr(model.action_space, "n", None)
+    raise SystemExit(
+        "Model/environment mismatch: the model expects observations shaped "
+        f"{model_shape} with {model_actions} actions, but {env.VERSION} provides "
+        f"{env.observation_space.shape} with {env.action_space.n}. " + HELP_TRAIN_FRESH
+    )
 
 
-def _model_q_values(model: DQN, observation: np.ndarray) -> list[float]:
+def _model_q_values(model: BaseAlgorithm, observation: np.ndarray) -> list[float]:
     observation_tensor, _ = model.policy.obs_to_tensor(observation)
-    with th.no_grad():
-        values = model.q_net(observation_tensor).detach().cpu().numpy()[0]
-    return [float(value) for value in values]
+    return [float(value) for value in action_values(model, observation_tensor)]
 
 
-def _random_evaluation(*, episodes: int, seed: int) -> dict[str, Any]:
-    env = NeonHighwayEnv()
+def _random_evaluation(
+    *,
+    episodes: int,
+    seed: int,
+    difficulty_mode: str,
+    episode_seconds: float | None = None,
+) -> dict[str, Any]:
+    env = NeonHighwayEnv(difficulty_mode=difficulty_mode, episode_seconds=episode_seconds)
     try:
         return evaluate_in_env(
             env,
@@ -331,6 +530,11 @@ def learn_mode(args: argparse.Namespace) -> None:
         "timesteps": args.timesteps,
         "seed": args.seed,
         "preset": args.preset,
+        "algorithm": args.algo,
+        "parallel_envs": args.envs,
+        "mirror_augmentation": args.mirror,
+        "difficulty": args.difficulty,
+        "episode_seconds": args.seconds or NeonHighwayEnv.EPISODE_SECONDS,
         "evaluation_seed": 10_000,
         "evaluation_episodes": args.eval_episodes,
         "validation_frequency": args.validation_freq,
@@ -339,43 +543,68 @@ def learn_mode(args: argparse.Namespace) -> None:
         "rendered_training": not args.headless,
         "render_fps": args.fps,
         "device": args.device,
-        "dqn": dqn_config,
+        "dqn": build_algorithm_kwargs(args.algo, dqn_config),
         "versions": {
             name: importlib.metadata.version(name)
             for name in ["gymnasium", "numpy", "pygame-ce", "stable-baselines3", "torch"]
         },
     }
     (run_dir / "config.json").write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
-    baseline = _random_evaluation(episodes=args.eval_episodes, seed=10_000)
+    baseline = _random_evaluation(
+        episodes=args.eval_episodes,
+        seed=10_000,
+        difficulty_mode=args.difficulty,
+        episode_seconds=args.seconds,
+    )
     (run_dir / "random_baseline.json").write_text(
         json.dumps(baseline, indent=2) + "\n", encoding="utf-8"
     )
 
-    game_env = NeonHighwayEnv(
-        render_mode=None if args.headless else "human",
-        render_fps=args.fps,
-    )
-    monitored_env = Monitor(game_env, str(run_dir / "monitor.csv"))
-    model = DQN(
+    game_env: NeonHighwayEnv | None = None
+    if args.envs > 1:
+        # The live HUD reads one env's state directly, so parallel collection
+        # and rendered training are mutually exclusive.
+        training_env: Any = SubprocVecEnv(
+            [
+                make_training_env(
+                    args.difficulty, args.seed, index, args.mirror, args.seconds
+                )
+                for index in range(args.envs)
+            ]
+        )
+        training_env = VecMonitor(training_env, str(run_dir / "monitor.csv"))
+    else:
+        game_env = NeonHighwayEnv(
+            render_mode=None if args.headless else "human",
+            render_fps=args.fps,
+            difficulty_mode=args.difficulty,
+            episode_seconds=args.seconds,
+        )
+        wrapped: gym.Env = MirrorSymmetry(game_env) if args.mirror else game_env
+        training_env = Monitor(wrapped, str(run_dir / "monitor.csv"))
+
+    model = ALGORITHMS[args.algo](
         "MlpPolicy",
-        monitored_env,
-        **dqn_config,
+        training_env,
+        **build_algorithm_kwargs(args.algo, dqn_config),
         seed=args.seed,
         device=args.device,
         verbose=1,
         tensorboard_log=str(run_dir / "tensorboard"),
     )
-    callback = CallbackList(
-        [
-            GameHudCallback(game_env, args.timesteps),
-            SafetyEvalCallback(
-                run_dir,
-                eval_freq=args.validation_freq,
-                episodes=args.validation_episodes,
-                seed=args.validation_seed,
-            ),
-        ]
-    )
+    callbacks: list[BaseCallback] = [
+        SafetyEvalCallback(
+            run_dir,
+            eval_freq=args.validation_freq,
+            episodes=args.validation_episodes,
+            seed=args.validation_seed,
+            difficulty_mode=args.difficulty,
+            episode_seconds=args.seconds,
+        )
+    ]
+    if game_env is not None:
+        callbacks.insert(0, GameHudCallback(game_env, args.timesteps))
+    callback = CallbackList(callbacks)
 
     try:
         model.learn(total_timesteps=args.timesteps, callback=callback, progress_bar=False)
@@ -383,14 +612,20 @@ def learn_mode(args: argparse.Namespace) -> None:
         print("\nTraining interrupted; saving current model.")
     finally:
         model.save(run_dir / "last_model")
-        monitored_env.close()
+        training_env.close()
 
     best_model_path = run_dir / "best_model.zip"
     if best_model_path.exists():
-        model = DQN.load(best_model_path, device=args.device)
+        model = load_model(best_model_path, device=args.device)
     model.save(run_dir / "model")
 
-    evaluation = _evaluation(model, episodes=args.eval_episodes, seed=10_000)
+    evaluation = _evaluation(
+        model,
+        episodes=args.eval_episodes,
+        seed=10_000,
+        difficulty_mode=args.difficulty,
+        episode_seconds=args.seconds,
+    )
     (run_dir / "evaluation.json").write_text(
         json.dumps(evaluation, indent=2) + "\n", encoding="utf-8"
     )
@@ -405,13 +640,8 @@ def learn_mode(args: argparse.Namespace) -> None:
     )
 
 
-def _latest_model(
-    model_directory: Path = Path("runs/game"),
-    required_shape: tuple[int, ...] | None = None,
-) -> Path:
-    if required_shape is None:
-        required_shape = NeonHighwayEnv().observation_space.shape
-
+def _latest_model(model_directory: Path = Path("runs/game")) -> Path:
+    reference_env = NeonHighwayEnv()
     candidates = sorted(
         model_directory.glob("*/model.zip"),
         key=lambda path: path.stat().st_mtime,
@@ -422,23 +652,70 @@ def _latest_model(
 
     for path in candidates:
         try:
-            model = DQN.load(path, device="cpu")
-        except (OSError, ValueError, KeyError):
+            model = load_model(path, device="cpu")
+        except (OSError, ValueError, KeyError, SystemExit):
             continue
-        if getattr(model.observation_space, "shape", None) == required_shape:
+        if _model_is_compatible(model, reference_env):
             return path
 
     raise SystemExit(
-        f"No model compatible with {NeonHighwayEnv.VERSION} observations shaped "
-        f"{required_shape} was found. Train one with: "
-        "uv run sdr-game learn --timesteps 30000"
+        f"No model compatible with {NeonHighwayEnv.VERSION} was found "
+        f"(needs observations shaped {reference_env.observation_space.shape} and "
+        f"{reference_env.action_space.n} actions). " + HELP_TRAIN_FRESH
     )
+
+
+def evaluate_mode(args: argparse.Namespace) -> None:
+    """Score one model across one or more independent seed sets.
+
+    A single 100-episode figure hides more variance than it shows: the same V4
+    checkpoint scores 55% on seeds 10,000 and 69% on seeds 30,000.
+    """
+    model_path = args.model or _latest_model()
+    model = load_model(model_path, device="cpu")
+    print(f"Model: {model_path}  ({type(model).__name__}, {args.difficulty} mode)\n")
+
+    results: dict[str, Any] = {}
+    for seed in args.seed:
+        result = _evaluation(
+            model,
+            episodes=args.episodes,
+            seed=seed,
+            difficulty_mode=args.difficulty,
+            episode_seconds=args.seconds,
+        )
+        results[str(seed)] = result
+        print(
+            f"  seeds {seed:>7,}-{seed + args.episodes - 1:<7,} "
+            f"completion {result['completion_rate']:>4.0%}  "
+            f"crash {result['crash_rate']:>4.0%}  "
+            f"timeout {result['timeout_rate']:>4.0%}  "
+            f"waves {result['mean_challenges_resolved']:.2f}  "
+            f"return {result['mean_return']:+.1f}"
+        )
+
+    if len(results) > 1:
+        rates = [result["completion_rate"] for result in results.values()]
+        print(
+            f"\n  across {len(rates)} sets: completion "
+            f"{min(rates):.0%}-{max(rates):.0%}, mean {float(np.mean(rates)):.0%}"
+        )
+
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
+        print(f"\nWrote {args.output}")
 
 
 def watch_mode(args: argparse.Namespace) -> None:
     model_path = args.model or _latest_model()
-    model = DQN.load(model_path, device="cpu")
-    env = NeonHighwayEnv(render_mode="human", render_fps=args.fps)
+    model = load_model(model_path, device="cpu")
+    env = NeonHighwayEnv(
+        render_mode="human",
+        render_fps=args.fps,
+        difficulty_mode=args.difficulty,
+        episode_seconds=args.seconds,
+    )
     try:
         _ensure_model_compatible(model, env)
         run_policy(
@@ -467,9 +744,16 @@ def main() -> None:
             args.eval_episodes,
             args.validation_freq,
             args.validation_episodes,
+            args.envs,
         ) < 1:
             raise SystemExit("Training, evaluation, and validation values must be at least 1")
+        if args.envs > 1 and not args.headless:
+            raise SystemExit(
+                "--envs > 1 requires --headless: the live HUD follows a single environment."
+            )
         learn_mode(args)
+    elif args.mode == "evaluate":
+        evaluate_mode(args)
     elif args.mode == "watch":
         watch_mode(args)
 
