@@ -98,6 +98,12 @@ def test_qrdqn_preset_adds_quantiles_without_touching_dqn() -> None:
     assert base["policy_kwargs"] == {"net_arch": [256, 256]}, "the preset was mutated"
 
 
+def test_gpu_preset_uses_stable_polyak_target_updates() -> None:
+    assert game.GPU_DQN_CONFIG["tau"] == 0.02
+    assert game.GPU_DQN_CONFIG["target_update_interval"] == 500
+    assert game.GPU_DQN_CONFIG["learning_rate"] < 3e-4
+
+
 def test_watch_defaults_to_three_interpolated_frames_per_step() -> None:
     args = game.build_parser().parse_args(["watch"])
 

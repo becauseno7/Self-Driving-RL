@@ -63,15 +63,18 @@ HIGH_COMPUTE_DQN_CONFIG: dict[str, Any] = {
 # doubles the replay ratio while collecting experience eight times faster.
 GPU_DQN_CONFIG: dict[str, Any] = {
     "policy_kwargs": {"net_arch": [256, 256]},
-    "learning_rate": 3e-4,
-    "buffer_size": 500_000,
-    "learning_starts": 20_000,
+    "learning_rate": 1.5e-4,
+    "buffer_size": 750_000,
+    "learning_starts": 25_000,
     "batch_size": 512,
     "gamma": 0.995,
+    # Small, frequent target updates avoid the 20%-72% policy swings seen in
+    # V4's hard-copy checkpoints while still letting QR-DQN learn quickly.
+    "tau": 0.02,
     "train_freq": (1, "step"),
     "gradient_steps": 4,
-    "target_update_interval": 5_000,
-    "exploration_fraction": 0.2,
+    "target_update_interval": 500,
+    "exploration_fraction": 0.3,
     "exploration_initial_eps": 1.0,
     "exploration_final_eps": 0.02,
 }
@@ -535,7 +538,8 @@ def _evaluation(
 HELP_TRAIN_FRESH = (
     "Run `uv run sdr-game watch` without --model to automatically select a "
     "compatible checkpoint, or train a fresh model with: "
-    "uv run sdr-game learn --preset gpu --algo qrdqn --headless --envs 8 --timesteps 2000000"
+    "uv run sdr-game learn --preset gpu --algo qrdqn --headless --envs 8 "
+    "--timesteps 2500000 --validation-freq 125000 --validation-episodes 100"
 )
 
 
@@ -614,6 +618,15 @@ def learn_mode(args: argparse.Namespace) -> None:
         "parallel_envs": args.envs,
         "mirror_augmentation": args.mirror,
         "difficulty": args.difficulty,
+        "driving_objective": {
+            "cruise_speed_mps": NeonHighwayEnv.CRUISE_SPEED,
+            "overtake_bonus": NeonHighwayEnv.OVERTAKE_BONUS,
+            "passed_by_traffic_cost": NeonHighwayEnv.PASSED_BY_TRAFFIC_COST,
+            "blocked_with_safe_pass_cost": NeonHighwayEnv.BLOCKED_WITH_SAFE_PASS_COST,
+            "lane_change_cost": NeonHighwayEnv.LANE_CHANGE_COMFORT_COST,
+            "unsafe_lane_change_cost": NeonHighwayEnv.UNSAFE_LANE_CHANGE_COST,
+            "crash_penalty": NeonHighwayEnv.CRASH_PENALTY,
+        },
         "episode_seconds": args.seconds or NeonHighwayEnv.EPISODE_SECONDS,
         "endless": args.endless,
         "evaluation_seed": 10_000,
@@ -799,14 +812,15 @@ def evaluate_mode(args: argparse.Namespace) -> None:
                 + f"mean {format_duration(result['mean_survival_seconds']):>8}  "
                 f"longest {format_duration(result['longest_survival_seconds']):>8}  "
                 f"waves {result['mean_challenges_resolved']:>5.2f}  "
+                f"net passes {result['mean_net_overtakes']:+5.1f}  "
                 f"return {result['mean_return']:+.1f}"
             )
         else:
             print(
                 span + f"completion {result['completion_rate']:>4.0%}  "
                 f"crash {result['crash_rate']:>4.0%}  "
-                f"timeout {result['timeout_rate']:>4.0%}  "
-                f"waves {result['mean_challenges_resolved']:.2f}  "
+                f"speed {result['mean_speed'] * 3.6:>3.0f} km/h  "
+                f"net passes {result['mean_net_overtakes']:+4.1f}  "
                 f"return {result['mean_return']:+.1f}"
             )
 

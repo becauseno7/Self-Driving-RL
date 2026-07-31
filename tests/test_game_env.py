@@ -41,6 +41,7 @@ def test_game_environment_contract() -> None:
     assert next_info["collision"] is None
     assert set(next_info["reward_components"]) == {
         "progress",
+        "traffic",
         "safety",
         "shaping",
         "comfort",
@@ -720,3 +721,129 @@ def test_route_completion_adds_terminal_bonus() -> None:
     assert info["completed"] is True
     assert info["reward_components"]["terminal"] == env.COMPLETION_BONUS
     assert reward > env.COMPLETION_BONUS
+
+
+def test_real_traffic_crossings_count_overtakes_and_being_passed() -> None:
+    env = NeonHighwayEnv(difficulty_mode="standard")
+    try:
+        env.reset(seed=201)
+        for index, car in enumerate(env.traffic):
+            car.previous_position = 100.0 + index * 10.0
+            car.position = car.previous_position
+
+        env.previous_ego_position = 0.0
+        env.ego_position = 1.0
+        overtaken = env.traffic[0]
+        overtaken.previous_position = 0.5
+        overtaken.position = 0.5
+        passing = env.traffic[1]
+        passing.previous_position = -0.5
+        passing.position = 1.5
+
+        overtakes, passed_by_traffic = env._traffic_progress_events()
+    finally:
+        env.close()
+
+    assert overtakes == 1
+    assert passed_by_traffic == 1
+
+
+def test_passing_option_requires_a_slower_leader_and_safe_clearer_lane() -> None:
+    env = NeonHighwayEnv(difficulty_mode="standard")
+    try:
+        env.reset(seed=202)
+        env.target_lane = 1
+        env.lane_position = 1.0
+        env.previous_lane_position = 1.0
+        for index, car in enumerate(env.traffic):
+            car.position = env.ego_position + 500.0 + index * 10.0
+            car.previous_position = car.position
+            car.speed = env.ego_speed
+
+        leader, clear_front, clear_rear, trap = env.traffic[:4]
+        leader.lane = 1
+        leader.position = env.ego_position + env.CAR_LENGTH + 20.0
+        leader.speed = env.ego_speed - 5.0
+        clear_front.lane = 2
+        clear_front.position = env.ego_position + env.CAR_LENGTH + 48.0
+        clear_rear.lane = 2
+        clear_rear.position = env.ego_position - env.CAR_LENGTH - 25.0
+        trap.lane = 0
+        trap.position = env.ego_position + env.CAR_LENGTH + 5.0
+        for car in (leader, clear_front, clear_rear, trap):
+            car.previous_position = car.position
+        env._invalidate_sensors()
+
+        options = env.passing_lane_options()
+        action_result = env._apply_action(LANE_RIGHT, passing_options=options)
+    finally:
+        env.close()
+
+    assert options == (2,)
+    assert action_result["passing_maneuver"] is True
+
+
+def test_traffic_reward_values_completed_passes_not_idle_weaving() -> None:
+    env = NeonHighwayEnv(difficulty_mode="standard")
+    try:
+        env.reset(seed=203)
+        waiting = env._apply_action(IDLE, passing_options=(2,))
+        env._reward(waiting)
+        waiting_traffic_reward = env.last_reward_components["traffic"]
+
+        overtake = env._apply_action(IDLE, passing_options=())
+        overtake["overtakes"] = 1
+        env._reward(overtake)
+        overtake_traffic_reward = env.last_reward_components["traffic"]
+
+        weave = env._apply_action(LANE_RIGHT, passing_options=())
+        env._reward(weave)
+        weave_traffic_reward = env.last_reward_components["traffic"]
+    finally:
+        env.close()
+
+    assert waiting_traffic_reward == -env.BLOCKED_WITH_SAFE_PASS_COST
+    assert overtake_traffic_reward == env.OVERTAKE_BONUS
+    assert weave_traffic_reward == 0.0
+
+
+def test_wrong_lane_does_not_evade_blocked_traffic_cost() -> None:
+    env = NeonHighwayEnv(difficulty_mode="standard")
+    try:
+        env.reset(seed=204)
+        wrong_way = env._apply_action(LANE_LEFT, passing_options=(2,))
+        env._reward(wrong_way)
+    finally:
+        env.close()
+
+    assert wrong_way["lane_change_started"] is True
+    assert wrong_way["passing_maneuver"] is False
+    assert env.last_reward_components["traffic"] == -(
+        env.BLOCKED_WITH_SAFE_PASS_COST + env.UNPRODUCTIVE_LANE_CHANGE_COST
+    )
+
+
+def test_merge_safety_potential_sees_target_lane_immediately() -> None:
+    env = NeonHighwayEnv(difficulty_mode="standard")
+    try:
+        env.reset(seed=205)
+        env.target_lane = 1
+        env.lane_position = 1.0
+        for index, car in enumerate(env.traffic):
+            car.position = env.ego_position + 300.0 + index * 10.0
+            car.previous_position = car.position
+        blocker = env.traffic[0]
+        blocker.lane = 2
+        blocker.position = env.ego_position + env.CAR_LENGTH + 2.0
+        blocker.previous_position = blocker.position
+        blocker.speed = env.ego_speed
+        env._invalidate_sensors()
+
+        before = env._safety_potential()
+        env.target_lane = 2
+        committed = env._safety_potential()
+    finally:
+        env.close()
+
+    assert before == 0.0
+    assert committed < -1.0

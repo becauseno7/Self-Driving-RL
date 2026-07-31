@@ -603,8 +603,10 @@ class NeonRenderer:
         )
 
         self._divider(x + 20, y + 578, width - 40)
-        self._mini_metric("NEAR MISSES", env.near_misses, x + 22, y + 594)
-        self._mini_metric("SAFE EVASIONS", env.safe_lane_changes, x + 154, y + 594)
+        self._mini_metric("OVERTAKES", env.overtakes, x + 22, y + 594)
+        self._mini_metric(
+            "NET PASSES", env.overtakes - env.passed_by_traffic, x + 154, y + 594
+        )
 
     def _draw_right_dashboard(self, env: NeonHighwayEnv) -> None:
         x, y, width, height = self.WIDTH - 336, 96, 318, 640
@@ -661,28 +663,29 @@ class NeonRenderer:
         components = env.last_reward_components
         component_colors = [
             self.CYAN,
+            self.GREEN,
             self.AMBER,
             (120, 200, 255),
             (179, 125, 246),
             self.RED,
-            self.GREEN,
+            (235, 238, 244),
         ]
         for index, name in enumerate(
-            ["progress", "safety", "shaping", "comfort", "rules", "terminal"]
+            ["progress", "traffic", "safety", "shaping", "comfort", "rules", "terminal"]
         ):
             self._reward_bar(
                 name.upper(),
                 float(components.get(name, 0.0)),
                 x + 22,
-                y + 402 + index * 19,
+                y + 400 + index * 17,
                 width - 44,
                 component_colors[index],
             )
 
-        self._divider(x + 20, y + 512, width - 40)
-        self._section_title("ACTION VALUES / Q", x + 22, y + 524, self.CYAN)
+        self._divider(x + 20, y + 522, width - 40)
+        self._section_title("ACTION VALUES / Q", x + 22, y + 534, self.CYAN)
         q_values = [float(value) for value in env.hud_data.get("q_values", [0.0] * ACTION_COUNT)]
-        self._draw_q_values(env, q_values, x + 22, y + 568, width - 44)
+        self._draw_q_values(env, q_values, x + 22, y + 572, width - 44)
 
     def _draw_q_values(
         self,

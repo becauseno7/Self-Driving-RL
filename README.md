@@ -298,6 +298,21 @@ The bundled 2M-step checkpoint predates smooth wave formation and the V4.1
 continuous collision solver. Treat its endless score as a baseline for the
 next retraining run, not as the expected ceiling.
 
+### V5 good-driver objective
+
+V5 teaches the agent to move through traffic rather than merely wait for a
+forced escape. Real overtakes, being passed, safe passing opportunities,
+blocked time and lane-change efficiency are now first-class evaluation
+metrics. The reward values completed passes but gives no bonus for starting a
+lane change, so unnecessary weaving still loses comfort reward.
+
+The frozen V4 policy completes 70% of the 100-episode development set but
+averages 67 km/h, answers 43% of safe passing opportunities and makes only 2.2
+net passes per route. A safe hand-written driver reaches 99%, 81 km/h and 10.1
+net passes with fewer lane changes, showing that the desired behaviour is
+achievable. See [docs/neon-highway-v5.md](docs/neon-highway-v5.md) for the exact
+metrics, reward and reproducible training command.
+
 ## Collaboration style
 
 The code is split into small files with one job each. Before each major change,

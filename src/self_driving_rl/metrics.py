@@ -41,6 +41,15 @@ class EvaluationSummary:
     longest_survival_seconds: float
     mean_episode_length: float
     mean_speed: float
+    mean_distance_km: float
+    mean_overtakes: float
+    mean_passed_by_traffic: float
+    mean_net_overtakes: float
+    mean_lane_changes: float
+    overtakes_per_100km: float
+    lane_changes_per_100km: float
+    passing_response_rate: float
+    blocked_step_rate: float
     mean_min_ttc: float
     mean_min_rear_ttc: float
     mean_challenges_presented: float
@@ -73,6 +82,13 @@ def evaluate_in_env(
     episode_minimum_rear_ttcs: list[float] = []
     challenges_presented: list[int] = []
     challenges_resolved: list[int] = []
+    distances: list[float] = []
+    overtakes: list[int] = []
+    passed_by_traffic: list[int] = []
+    lane_changes: list[int] = []
+    passing_opportunities = 0
+    passing_actions = 0
+    blocked_steps = 0
 
     for episode in range(episodes):
         episode_seed = seed + episode
@@ -118,6 +134,17 @@ def evaluate_in_env(
             episode_minimum_rear_ttcs.append(minimum_rear_ttc)
         challenges_presented.append(int(final_info.get("challenges_presented", 0)))
         challenges_resolved.append(int(final_info.get("challenges_resolved", 0)))
+        distances.append(float(final_info.get("distance_m", 0.0)))
+        overtakes.append(int(final_info.get("overtakes", 0)))
+        passed_by_traffic.append(int(final_info.get("passed_by_traffic", 0)))
+        lane_changes.append(int(final_info.get("lane_changes", 0)))
+        passing_opportunities += int(final_info.get("passing_opportunities", 0))
+        passing_actions += int(final_info.get("passing_actions", 0))
+        blocked_steps += int(final_info.get("blocked_steps", 0))
+
+    distance_km = float(np.sum(distances)) / 1000.0
+    total_overtakes = int(np.sum(overtakes))
+    total_lane_changes = int(np.sum(lane_changes))
 
     return EvaluationSummary(
         episodes=episodes,
@@ -131,6 +158,21 @@ def evaluate_in_env(
         longest_survival_seconds=float(np.max(survival_seconds)),
         mean_episode_length=float(np.mean(lengths)),
         mean_speed=float(np.mean(speeds)) if speeds else float("nan"),
+        mean_distance_km=float(np.mean(distances)) / 1000.0,
+        mean_overtakes=float(np.mean(overtakes)),
+        mean_passed_by_traffic=float(np.mean(passed_by_traffic)),
+        mean_net_overtakes=float(np.mean(np.subtract(overtakes, passed_by_traffic))),
+        mean_lane_changes=float(np.mean(lane_changes)),
+        overtakes_per_100km=(
+            100.0 * total_overtakes / distance_km if distance_km > 0.0 else 0.0
+        ),
+        lane_changes_per_100km=(
+            100.0 * total_lane_changes / distance_km if distance_km > 0.0 else 0.0
+        ),
+        passing_response_rate=(
+            passing_actions / passing_opportunities if passing_opportunities else 0.0
+        ),
+        blocked_step_rate=blocked_steps / max(int(np.sum(lengths)), 1),
         mean_min_ttc=(
             float(np.mean(episode_minimum_ttcs)) if episode_minimum_ttcs else float("nan")
         ),

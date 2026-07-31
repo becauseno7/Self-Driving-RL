@@ -75,7 +75,7 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
 
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 60}
 
-    VERSION = "NeonHighwayEnv-v4.1"
+    VERSION = "NeonHighwayEnv-v5"
     DIFFICULTY_MODES = {"standard", "hard"}
     LANES = 4
     DT = 0.1
@@ -103,10 +103,22 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
     MAX_BRAKING = 5.2
     SPEED_CONTROLLER_GAIN = 1.8
     TARGET_CHANGE_COMFORT_COST = 0.006
-    UNSAFE_LANE_CHANGE_COST = 0.28
+    LANE_CHANGE_COMFORT_COST = 0.05
+    UNPRODUCTIVE_LANE_CHANGE_COST = 0.12
+    UNSAFE_LANE_CHANGE_COST = 0.75
     SAFE_LANE_CHANGE_FRONT_GAP = 15.0
     SAFE_LANE_CHANGE_REAR_GAP = 11.0
     SAFE_LANE_CHANGE_REAR_TTC = 3.5
+    # "Good driving" means making progress through traffic, not merely moving
+    # fast on an empty lane. A passing option only exists behind a slower car
+    # when an adjacent lane is both safe and materially clearer.
+    CRUISE_SPEED = 27.0
+    PASSING_TRIGGER_GAP = 32.0
+    PASSING_MIN_CLOSING_SPEED = 1.0
+    PASSING_CLEARANCE_GAIN = 8.0
+    OVERTAKE_BONUS = 0.60
+    PASSED_BY_TRAFFIC_COST = 0.35
+    BLOCKED_WITH_SAFE_PASS_COST = 0.005
     # A wave is staged every CHALLENGE_INTERVAL_STEPS, so a longer route is a
     # longer endurance test rather than the same three waves with dead time
     # bolted on the end. The default 45 s route gives the familiar three.
@@ -121,8 +133,8 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
     # bonus 450 steps away still retains ~10% of its value, so completing the
     # route is worth chasing. They are far too large for a 0.98 agent, which
     # cannot see past ~50 steps.
-    CRASH_PENALTY = -15.0
-    COMPLETION_BONUS = 15.0
+    CRASH_PENALTY = -30.0
+    COMPLETION_BONUS = 20.0
     CHALLENGE_BONUS = 3.0
     TIMEOUT_PENALTY = -2.0
 
@@ -130,7 +142,7 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
     # speeds learning up without changing which policy is optimal. A raw per
     # step threat penalty instead pays the agent to crawl.
     SHAPING_GAMMA = 0.995
-    SAFETY_POTENTIAL_WEIGHT = 2.0
+    SAFETY_POTENTIAL_WEIGHT = 3.0
     THREAT_HORIZON = 6.0
 
     # Intelligent Driver Model constants for traffic cars. Together with the
@@ -213,6 +225,12 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         self.last_collision: CollisionEvent | None = None
         self.near_misses = 0
         self.safe_lane_changes = 0
+        self.lane_changes = 0
+        self.overtakes = 0
+        self.passed_by_traffic = 0
+        self.passing_opportunities = 0
+        self.passing_actions = 0
+        self.blocked_steps = 0
         self.invalid_actions = 0
         self.challenges_presented = 0
         self.challenges_resolved = 0
@@ -221,6 +239,7 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         self.challenge_name = "OPEN ROAD"
         self._next_challenge_index = 0
         self._near_miss_active = False
+        self._passing_opportunity_active = False
         self._previous_potential = 0.0
         self.quit_requested = False
         self.renderer: Any | None = None
@@ -317,6 +336,12 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         self.last_collision = None
         self.near_misses = 0
         self.safe_lane_changes = 0
+        self.lane_changes = 0
+        self.overtakes = 0
+        self.passed_by_traffic = 0
+        self.passing_opportunities = 0
+        self.passing_actions = 0
+        self.blocked_steps = 0
         self.invalid_actions = 0
         self.challenges_presented = 0
         self.challenges_resolved = 0
@@ -325,6 +350,7 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         self.challenge_name = "OPEN ROAD"
         self._next_challenge_index = 0
         self._near_miss_active = False
+        self._passing_opportunity_active = False
         self._spawn_traffic()
         self._maybe_stage_hard_challenge()
         self._invalidate_sensors()
@@ -510,12 +536,30 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
             raise ValueError(f"Invalid action: {action}")
 
         self._invalidate_sensors()
+        passing_options = self.passing_lane_options()
+        passing_opportunity = bool(passing_options)
+        if passing_opportunity and not self._passing_opportunity_active:
+            self.passing_opportunities += 1
+        self._passing_opportunity_active = passing_opportunity
         self.last_action = action
-        action_result = self._apply_action(action)
+        action_result = self._apply_action(action, passing_options=passing_options)
+        if action_result["passing_maneuver"]:
+            self.passing_actions += 1
+            self._passing_opportunity_active = False
+        elif passing_opportunity:
+            self.blocked_steps += 1
         self._update_motion()
+        overtakes, passed_by_traffic = self._traffic_progress_events()
         self._recycle_traffic()
         self.last_collision = self._detect_collision()
         self.crashed = self.last_collision is not None
+        if self.crashed:
+            # Crossing the centre of a car during an impact is not an overtake.
+            overtakes = passed_by_traffic = 0
+        self.overtakes += overtakes
+        self.passed_by_traffic += passed_by_traffic
+        action_result["overtakes"] = overtakes
+        action_result["passed_by_traffic"] = passed_by_traffic
         self.step_count += 1
         challenge_resolved = self._update_challenge_progress()
         action_result["challenge_resolved"] = challenge_resolved
@@ -561,13 +605,21 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         self._invalidate_sensors()
         return observation, reward, terminated, truncated, info
 
-    def _apply_action(self, action: int) -> dict[str, bool]:
+    def _apply_action(
+        self,
+        action: int,
+        *,
+        passing_options: tuple[int, ...] | None = None,
+    ) -> dict[str, bool | int]:
         invalid = False
         lane_change_started = False
         safe_lane_change = False
+        passing_maneuver = False
         speed_target_changed = False
         steer, pedal = decode_action(action)
         lane_change_finished = abs(self.lane_position - self.target_lane) < 0.05
+        if passing_options is None:
+            passing_options = self.passing_lane_options()
 
         if steer != STEER_KEEP and lane_change_finished:
             direction = -1 if steer == STEER_LEFT else 1
@@ -590,6 +642,8 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
                 )
                 self.target_lane = candidate_lane
                 lane_change_started = True
+                self.lane_changes += 1
+                passing_maneuver = candidate_lane in passing_options
                 if danger_here and safe_lane_change:
                     self.safe_lane_changes += 1
             else:
@@ -623,8 +677,65 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
             "lane_change_started": lane_change_started,
             "safe_lane_change": safe_lane_change,
             "unsafe_lane_change": lane_change_started and not safe_lane_change,
+            "passing_maneuver": passing_maneuver,
+            "passing_opportunity": bool(passing_options),
             "speed_target_changed": speed_target_changed,
+            "overtakes": 0,
+            "passed_by_traffic": 0,
         }
+
+    def passing_lane_options(self) -> tuple[int, ...]:
+        """Adjacent lanes that offer a safe, useful pass right now."""
+        if abs(self.lane_position - self.target_lane) >= 0.05:
+            return ()
+
+        sensors = self._sensors()
+        front_gap, front_relative, _, _ = sensors[self.target_lane]
+        if (
+            front_gap >= self.PASSING_TRIGGER_GAP
+            or front_relative >= -self.PASSING_MIN_CLOSING_SPEED
+        ):
+            return ()
+
+        options: list[int] = []
+        for candidate in (self.target_lane - 1, self.target_lane + 1):
+            if not 0 <= candidate < self.LANES:
+                continue
+            ahead_gap, ahead_relative, behind_gap, behind_relative = sensors[candidate]
+            rear_closing_speed = max(behind_relative, 0.0)
+            rear_ttc = (
+                behind_gap / rear_closing_speed
+                if rear_closing_speed > 0.1
+                else float("inf")
+            )
+            safe = (
+                ahead_gap > self.SAFE_LANE_CHANGE_FRONT_GAP
+                and behind_gap > self.SAFE_LANE_CHANGE_REAR_GAP
+                and rear_ttc > self.SAFE_LANE_CHANGE_REAR_TTC
+            )
+            materially_better = (
+                ahead_gap > front_gap + self.PASSING_CLEARANCE_GAIN
+                and (
+                    ahead_relative > front_relative + self.PASSING_MIN_CLOSING_SPEED
+                    or ahead_gap > front_gap + 2.0 * self.PASSING_CLEARANCE_GAIN
+                )
+            )
+            if safe and materially_better:
+                options.append(candidate)
+        return tuple(options)
+
+    def _traffic_progress_events(self) -> tuple[int, int]:
+        """Count real centre-line crossings before any off-screen recycling."""
+        overtakes = 0
+        passed_by_traffic = 0
+        for car in self.traffic:
+            previous_gap = car.previous_position - self.previous_ego_position
+            current_gap = car.position - self.ego_position
+            if previous_gap > 0.0 >= current_gap:
+                overtakes += 1
+            elif previous_gap < 0.0 <= current_gap:
+                passed_by_traffic += 1
+        return overtakes, passed_by_traffic
 
     def _update_motion(self) -> None:
         self.previous_ego_position = self.ego_position
@@ -965,6 +1076,7 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
     def _empty_reward_components() -> dict[str, float]:
         return {
             "progress": 0.0,
+            "traffic": 0.0,
             "safety": 0.0,
             "shaping": 0.0,
             "comfort": 0.0,
@@ -973,15 +1085,59 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         }
 
     def _safety_potential(self) -> float:
-        """Higher is safer. Only differences of this function are ever paid."""
-        front = self.current_threat()["level"]
-        rear = self.rear_threat()["level"]
-        return -self.SAFETY_POTENTIAL_WEIGHT * (front + rear)
+        """Higher is safer. Only differences of this function are ever paid.
 
-    def _reward(self, action_result: dict[str, bool]) -> float:
-        speed_fraction = (self.ego_speed - self.MIN_SPEED) / (self.MAX_SPEED - self.MIN_SPEED)
+        During a merge, the old implementation watched only the lane nearest
+        the ego centre. That made the target lane disappear from shaping until
+        halfway through the manoeuvre -- much too late to teach a safe gap.
+        We now watch every lane touched by the car plus the committed target
+        lane, and include both closing-speed and minimum-clearance risk.
+        """
+        relevant_lanes = {self.target_lane}
+        relevant_lanes.update(
+            lane
+            for lane in range(self.LANES)
+            if abs(float(lane) - self.lane_position) <= self.LANE_COLLISION_WIDTH
+        )
+
+        front_threat = 0.0
+        rear_threat = 0.0
+        for lane in relevant_lanes:
+            ahead_gap, ahead_relative, behind_gap, behind_relative = self._sensors()[lane]
+            front_threat = max(
+                front_threat,
+                self._urgency(ahead_gap, max(-ahead_relative, 0.0)),
+                float(np.clip(1.0 - ahead_gap / self.SAFE_LANE_CHANGE_FRONT_GAP, 0.0, 1.0)),
+            )
+            rear_threat = max(
+                rear_threat,
+                self._urgency(behind_gap, max(behind_relative, 0.0)),
+                float(np.clip(1.0 - behind_gap / self.SAFE_LANE_CHANGE_REAR_GAP, 0.0, 1.0)),
+            )
+        return -self.SAFETY_POTENTIAL_WEIGHT * (front_threat + rear_threat)
+
+    def _reward(self, action_result: dict[str, bool | int]) -> float:
+        # Reward a sensible highway cruise, then plateau. Going beyond 97 km/h
+        # should only be useful to complete a pass, not valuable by itself.
+        speed_fraction = (self.ego_speed - self.MIN_SPEED) / (
+            self.CRUISE_SPEED - self.MIN_SPEED
+        )
         components = self._empty_reward_components()
-        components["progress"] = 0.025 + 0.075 * float(np.clip(speed_fraction, 0.0, 1.0))
+        components["progress"] = 0.01 + 0.09 * float(np.clip(speed_fraction, 0.0, 1.0))
+
+        if not self.crashed:
+            components["traffic"] += self.OVERTAKE_BONUS * int(action_result["overtakes"])
+            components["traffic"] -= self.PASSED_BY_TRAFFIC_COST * int(
+                action_result["passed_by_traffic"]
+            )
+        if action_result["passing_opportunity"] and not action_result["passing_maneuver"]:
+            components["traffic"] -= self.BLOCKED_WITH_SAFE_PASS_COST
+        if (
+            action_result["lane_change_started"]
+            and action_result["passing_opportunity"]
+            and not action_result["passing_maneuver"]
+        ):
+            components["traffic"] -= self.UNPRODUCTIVE_LANE_CHANGE_COST
 
         # Potential-based shaping: gamma * Phi(s') - Phi(s). On a terminal step
         # the successor has no future, so its potential is 0 by definition.
@@ -997,8 +1153,8 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
             components["safety"] -= self.UNSAFE_LANE_CHANGE_COST
         if action_result.get("challenge_resolved", False):
             components["safety"] += self.CHALLENGE_BONUS
-        if action_result["lane_change_requested"]:
-            components["comfort"] -= 0.012
+        if action_result["lane_change_started"]:
+            components["comfort"] -= self.LANE_CHANGE_COMFORT_COST
         if action_result["speed_target_changed"]:
             components["comfort"] -= self.TARGET_CHANGE_COMFORT_COST
         components["comfort"] -= 0.004 * (abs(self.longitudinal_acceleration) / self.MAX_BRAKING)
@@ -1147,6 +1303,15 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
             "challenges_resolved": self.challenges_resolved,
             "near_misses": self.near_misses,
             "safe_lane_changes": self.safe_lane_changes,
+            "lane_changes": self.lane_changes,
+            "overtakes": self.overtakes,
+            "passed_by_traffic": self.passed_by_traffic,
+            "net_overtakes": self.overtakes - self.passed_by_traffic,
+            "passing_opportunities": self.passing_opportunities,
+            "passing_actions": self.passing_actions,
+            "passing_opportunity": bool(self.passing_lane_options()),
+            "blocked_steps": self.blocked_steps,
+            "distance_m": self.ego_position,
             "invalid_actions": self.invalid_actions,
             "ttc": threat["ttc"],
             "threat_level": threat["level"],

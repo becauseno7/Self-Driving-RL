@@ -24,6 +24,8 @@ def test_evaluation_summary_has_expected_shape() -> None:
     assert 0.0 <= summary.crash_rate <= 1.0
     assert summary.mean_episode_length > 0
     assert summary.action_counts == {"1": int(summary.mean_episode_length * 2)}
+    assert summary.mean_overtakes == 0.0
+    assert summary.mean_net_overtakes == 0.0
 
 
 def test_format_duration_reads_naturally_at_every_scale() -> None:
