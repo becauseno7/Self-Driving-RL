@@ -387,6 +387,13 @@ def test_episode_seconds_rejects_a_route_shorter_than_the_physics_allows() -> No
         raise AssertionError("a 1 second route should have been rejected")
 
 
+def _clear_the_road(env: NeonHighwayEnv) -> None:
+    for car in env.traffic:
+        if abs(car.position - env.ego_position) < 12.0:
+            car.position = env.ego_position + 300.0
+            car.previous_position = car.position
+
+
 def test_endless_mode_only_ends_on_a_crash() -> None:
     env = NeonHighwayEnv(difficulty_mode="hard", endless=True)
     try:
@@ -395,10 +402,7 @@ def test_endless_mode_only_ends_on_a_crash() -> None:
         steps = 0
         info: dict = {}
         while not (terminated or truncated) and steps < 3_000:
-            for car in env.traffic:  # keep the road survivable
-                if abs(car.position - env.ego_position) < 12.0:
-                    car.position = env.ego_position + 300.0
-                    car.previous_position = car.position
+            _clear_the_road(env)
             _, _, terminated, truncated, info = env.step(IDLE)
             steps += 1
     finally:
@@ -406,65 +410,76 @@ def test_endless_mode_only_ends_on_a_crash() -> None:
 
     assert steps == 3_000, "endless mode ended without a crash"
     assert not terminated and not truncated
-    assert info["completed"] is False, "endless mode should never 'complete'"
-    assert info["laps_completed"] == 6, "3,000 steps is six 450-step laps"
+    assert info["completed"] is False, "endless mode should never complete"
+    assert info["elapsed_seconds"] == 300.0
 
 
-def test_endless_laps_recycle_the_clock_and_the_waves() -> None:
-    """A lap must look like a fresh route, or a route-trained policy is lost."""
+def test_endless_driving_is_one_continuous_run() -> None:
+    """No route boundary: the clock only counts up and waves only accumulate."""
     env = NeonHighwayEnv(difficulty_mode="hard", endless=True)
     try:
         env.reset(seed=7)
-        time_remaining_at_lap_start = []
-        for _ in range(1_000):
-            for car in env.traffic:
-                if abs(car.position - env.ego_position) < 12.0:
-                    car.position = env.ego_position + 300.0
-                    car.previous_position = car.position
+        elapsed = []
+        resolved = []
+        for _ in range(1_200):
+            _clear_the_road(env)
+            _, _, _, _, info = env.step(IDLE)
+            elapsed.append(info["elapsed_seconds"])
+            resolved.append(info["challenges_resolved"])
+    finally:
+        env.close()
+
+    assert elapsed == sorted(elapsed), "the clock reset at some point"
+    assert resolved == sorted(resolved), "the wave counter reset at some point"
+    assert resolved[-1] > len(NeonHighwayEnv(difficulty_mode="hard").challenge_steps), (
+        "waves stopped arriving after one route's worth"
+    )
+
+
+def test_endless_observation_reports_no_deadline() -> None:
+    """A route-trained policy must not see the clock run out mid-drive."""
+    env = NeonHighwayEnv(difficulty_mode="hard", endless=True)
+    try:
+        env.reset(seed=7)
+        time_remaining = []
+        for _ in range(900):
+            _clear_the_road(env)
             env.step(IDLE)
-            if env.lap_step == 0:
-                time_remaining_at_lap_start.append(float(env._observation()[6]))
-                assert env.challenges_resolved == 0, "wave counter did not reset"
-        laps = env.laps_completed
+            observation = env._observation()
+            time_remaining.append(float(observation[6]))
     finally:
         env.close()
 
-    assert laps == 2
-    assert time_remaining_at_lap_start == [1.0, 1.0], "the clock did not restart"
+    assert set(time_remaining) == {1.0}, "endless mode should report no deadline"
 
 
-def test_a_completed_lap_pays_the_route_bonus_without_ending_the_episode() -> None:
+def test_endless_mode_never_pays_a_route_completion_bonus() -> None:
     env = NeonHighwayEnv(difficulty_mode="hard", endless=True)
     try:
         env.reset(seed=7)
-        lap_reward = None
-        for _ in range(600):
-            for car in env.traffic:
-                if abs(car.position - env.ego_position) < 12.0:
-                    car.position = env.ego_position + 300.0
-                    car.previous_position = car.position
+        terminal_components = []
+        for _ in range(900):
+            _clear_the_road(env)
             _, _, terminated, truncated, info = env.step(IDLE)
-            if env.lap_step == 0 and env.laps_completed == 1:
-                lap_reward = info["reward_components"]["progress"]
-                assert not (terminated or truncated)
-                break
+            terminal_components.append(info["reward_components"]["terminal"])
+            assert not (terminated or truncated)
     finally:
         env.close()
 
-    assert lap_reward is not None, "no lap was banked"
-    assert lap_reward > env.COMPLETION_BONUS
+    assert set(terminal_components) == {0.0}, "something ended the route"
 
 
 def test_fixed_route_mode_is_unchanged_by_the_endless_machinery() -> None:
     fixed = NeonHighwayEnv(difficulty_mode="hard")
     try:
-        fixed.reset(seed=21)
+        observation, _ = fixed.reset(seed=21)
         assert fixed.endless is False
+        assert observation[6] == 1.0
         for _ in range(40):
             fixed.step(IDLE)
-            assert fixed.lap_step == fixed.step_count, "lap clock drifted off endless"
             if fixed.crashed:
                 break
+        assert fixed._observation()[6] < 1.0, "the fixed-route clock stopped counting down"
     finally:
         fixed.close()
 

@@ -248,41 +248,36 @@ Train on the length you intend to measure — pass the same `--seconds` to
 
 ### Endless mode
 
-`--endless` removes the finish line. A finished route is banked as a lap and
-the car drives straight into the next one, so the only thing that restarts the
-episode is a crash:
+`--endless` removes the finish line entirely. It is one continuous drive, and
+the only thing that restarts it is a crash:
 
 ```powershell
 uv run sdr-game watch --difficulty hard --endless
 ```
 
-Laps deliberately recycle the episode clock and the wave counter, so each lap
-looks to the agent exactly like a fresh route. A policy trained on fixed routes
-therefore stays in distribution and needs no retraining. A banked lap pays the
-same bonus as finishing a fixed route.
+There is no route boundary and nothing resets mid-drive: the clock only counts
+up and waves keep arriving every 15 s, accumulating. Because there is no
+deadline, the episode-clock observation reports "plenty of road left" for the
+whole run, which is the state the agent spends most of training in, so a policy
+trained on fixed routes needs no retraining.
 
-The header shows the current lap and distance driven; `CHALLENGES` shows waves
-cleared this lap. Completion rate is meaningless here — every endless episode
-ends in a crash eventually — so `evaluate --endless` reports laps and steps
-survived instead:
+The header shows time survived, distance, and the longest run of the session.
+`CHALLENGES` shows waves cleared so far.
+
+Completion rate is meaningless here, since every endless run ends in a crash
+eventually, so `evaluate --endless` reports survival time:
 
 ```powershell
 uv run sdr-game evaluate --endless --episodes 30 --seed 30000 50000
 ```
 
-The 2M-step model averages 1.8 laps, about 1,000 steps or 100 simulated
-seconds, before it crashes.
+```text
+  seeds 30,000-30,029  mean 4m 28s  longest 19m 02s  waves 17.93
+  seeds 50,000-50,029  mean 3m 14s  longest  9m 39s  waves 12.97
+```
 
-The 2M-step run takes about 45 minutes on the RTX 4070. It closed the
-directional gap from 14.0 points to 0.8, and 60% of its lane changes now carry a
-pedal input at the same time. Completion runs 55-69% depending on which
-100-episode seed set you measure — the standard seed-10,000 set is the hardest
-sample of the five tried, so no single number is representative.
-
-Validation completion still swings by up to 50 points between neighbouring
-checkpoints, which is now the main obstacle to a high success rate.
-[docs/neon-highway-v4.md](docs/neon-highway-v4.md) has the full accounting and
-what to try next.
+The 2M-step model averages three to four and a half minutes per life and has
+run as long as 19 minutes, clearing 18 waves along the way.
 
 ## Collaboration style
 

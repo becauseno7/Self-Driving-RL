@@ -14,6 +14,17 @@ from numpy.typing import NDArray
 Policy = Callable[[NDArray[np.floating[Any]]], int]
 
 
+def format_duration(seconds: float) -> str:
+    """Render simulated seconds as 12.4s, 3m 07s, or 1h 04m."""
+    if seconds < 60.0:
+        return f"{seconds:.1f}s"
+    if seconds < 3600.0:
+        minutes, remainder = divmod(int(round(seconds)), 60)
+        return f"{minutes}m {remainder:02d}s"
+    hours, remainder = divmod(int(round(seconds)), 3600)
+    return f"{hours}h {remainder // 60:02d}m"
+
+
 @dataclass(frozen=True)
 class EvaluationSummary:
     episodes: int
@@ -25,8 +36,9 @@ class EvaluationSummary:
     # Episodes that hit the absolute step limit without crashing or completing.
     # crash_rate + completion_rate + timeout_rate should always be 1.0.
     timeout_rate: float
-    # Endless mode never completes, so laps survived is the metric that moves.
-    mean_laps: float
+    # Endless mode never completes, so survival time is the metric that moves.
+    mean_survival_seconds: float
+    longest_survival_seconds: float
     mean_episode_length: float
     mean_speed: float
     mean_min_ttc: float
@@ -54,7 +66,7 @@ def evaluate_in_env(
     crashes = 0
     completions = 0
     timeouts = 0
-    laps: list[int] = []
+    survival_seconds: list[float] = []
     action_counts: Counter[str] = Counter()
     collision_types: Counter[str] = Counter()
     episode_minimum_ttcs: list[float] = []
@@ -96,7 +108,7 @@ def evaluate_in_env(
         crashes += int(bool(final_info.get("crashed", False)))
         completions += int(bool(final_info.get("completed", truncated and not terminated)))
         timeouts += int(bool(final_info.get("timed_out", False)))
-        laps.append(int(final_info.get("laps_completed", 0)))
+        survival_seconds.append(float(final_info.get("elapsed_seconds", 0.0)))
         collision = final_info.get("collision")
         if isinstance(collision, dict) and collision.get("kind"):
             collision_types[str(collision["kind"])] += 1
@@ -115,7 +127,8 @@ def evaluate_in_env(
         crash_rate=crashes / episodes,
         completion_rate=completions / episodes,
         timeout_rate=timeouts / episodes,
-        mean_laps=float(np.mean(laps)),
+        mean_survival_seconds=float(np.mean(survival_seconds)),
+        longest_survival_seconds=float(np.max(survival_seconds)),
         mean_episode_length=float(np.mean(lengths)),
         mean_speed=float(np.mean(speeds)) if speeds else float("nan"),
         mean_min_ttc=(

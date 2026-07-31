@@ -136,29 +136,35 @@ measure.
 
 ## Endless mode
 
-`--endless` turns the route into a lap. When a route would have finished, the
-lap is banked and the car keeps driving; only a crash ends the episode.
+`--endless` removes the finish line: one continuous drive until a crash. There
+is no route boundary, no lap, and nothing that resets mid-drive. Waves keep
+arriving every `CHALLENGE_INTERVAL_STEPS` and the wave counter accumulates.
 
-The design decision that matters is what a lap does to the observation. The
-episode clock and wave counter **recycle**: `lap_step` returns to zero, the
-wave counter resets, and feature 6 (time remaining) climbs back to 1.0. Each
-lap therefore looks to the agent exactly like a fresh route, which is why a
-policy trained on fixed 45 s routes runs in endless mode without retraining. A
-naive implementation that let the clock run to zero and stay there would have
-pushed every policy off-distribution the moment the first route ended.
+The design question is what the episode clock means without a deadline. It
+reports a constant 1.0 -- "plenty of road left" -- which is the state the agent
+occupies for most of training, so a policy trained on fixed 45 s routes drives
+endlessly with no retraining. The waves-cleared fraction reports 0.0 for the
+same reason: "fraction of the route's waves cleared" has no value when waves
+never stop arriving.
 
-A banked lap pays `COMPLETION_BONUS`, the same as finishing a fixed route,
-because it is the same achievement. The potential-based shaping is untouched:
-its potential is zeroed only on a genuine terminal state, and a lap is not one.
+An earlier attempt banked each finished route as a lap and recycled the clock.
+It worked, but the recycling was an artifact with no counterpart in the task,
+and it cost real performance: repeatedly walking the agent through end-of-route
+states more than halved how long it survived.
+
+| | Mean survival | Longest run |
+|---|---:|---:|
+| Lap-recycling design | ~1m 40s | - |
+| Continuous | 3m 14s - 4m 28s | 19m 02s |
 
 `ENDLESS_STEP_LIMIT` (100,000 steps, ~2.8 simulated hours) still bounds the
 episode so a flawless policy cannot hang a training run.
 
-Completion rate carries no information in endless mode — every episode ends in
-a crash sooner or later — so `EvaluationSummary` gained `mean_laps`, and
-`evaluate --endless` reports laps and steps survived. The 2M-step model
-averages 1.80 laps across two 30-episode seed sets (1.87 and 1.73), roughly
-1,000 steps or 100 simulated seconds per life.
+Completion rate carries no information when every episode ends in a crash, so
+`EvaluationSummary` gained `mean_survival_seconds` and
+`longest_survival_seconds`, and `evaluate --endless` reports those instead. Over
+two 30-episode seed sets the 2M-step model averages 4m 28s and 3m 14s per life,
+clearing 17.9 and 13.0 waves, with a single best run of 19m 02s.
 
 ## Results
 

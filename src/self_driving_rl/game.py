@@ -22,7 +22,7 @@ from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecMonitor
 
 from self_driving_rl.game_env import ACTION_COUNT, NeonHighwayEnv
-from self_driving_rl.metrics import evaluate_in_env
+from self_driving_rl.metrics import evaluate_in_env, format_duration
 from self_driving_rl.symmetry import MirrorSymmetry
 
 # gamma must stay in step with NeonHighwayEnv.SHAPING_GAMMA: episodes are 450
@@ -412,6 +412,7 @@ def run_policy(
     completed = 0
     crashes = 0
     completions = 0
+    longest_survival = 0.0
     best_return = float("-inf")
     recent_returns: deque[float] = deque(maxlen=20)
     collision_types: Counter[str] = Counter()
@@ -436,6 +437,7 @@ def run_policy(
                     "recent_returns": list(recent_returns),
                     "q_values": q_values,
                     "collision_types": dict(collision_types),
+                    "longest_survival": longest_survival,
                 }
             )
             observation, _, terminated, truncated, info = env.step(action)
@@ -449,6 +451,10 @@ def run_policy(
                 collision_types[str(collision["kind"])] += 1
             best_return = max(best_return, env.episode_return)
             recent_returns.append(env.episode_return)
+            if env.elapsed_seconds > longest_survival:
+                longest_survival = env.elapsed_seconds
+                if env.endless:
+                    print(f"  New longest run: {format_duration(longest_survival)}")
 
 
 def random_mode(args: argparse.Namespace) -> None:
@@ -730,9 +736,10 @@ def evaluate_mode(args: argparse.Namespace) -> None:
         if args.endless:
             # Nothing ever "completes", so survival is the whole story.
             print(
-                span + f"laps {result['mean_laps']:>5.2f}  "
-                f"steps {result['mean_episode_length']:>7.0f}  "
-                f"crash {result['crash_rate']:>4.0%}  "
+                span
+                + f"mean {format_duration(result['mean_survival_seconds']):>8}  "
+                f"longest {format_duration(result['longest_survival_seconds']):>8}  "
+                f"waves {result['mean_challenges_resolved']:>5.2f}  "
                 f"return {result['mean_return']:+.1f}"
             )
         else:
@@ -745,14 +752,16 @@ def evaluate_mode(args: argparse.Namespace) -> None:
             )
 
     if len(results) > 1:
-        key = "mean_laps" if args.endless else "completion_rate"
-        values = [result[key] for result in results.values()]
         if args.endless:
+            means = [result["mean_survival_seconds"] for result in results.values()]
+            best = max(result["longest_survival_seconds"] for result in results.values())
             print(
-                f"\n  across {len(values)} sets: laps "
-                f"{min(values):.2f}-{max(values):.2f}, mean {float(np.mean(values)):.2f}"
+                f"\n  across {len(means)} sets: mean survival "
+                f"{format_duration(min(means))}-{format_duration(max(means))}, "
+                f"longest single run {format_duration(best)}"
             )
         else:
+            values = [result["completion_rate"] for result in results.values()]
             print(
                 f"\n  across {len(values)} sets: completion "
                 f"{min(values):.0%}-{max(values):.0%}, mean {float(np.mean(values)):.0%}"

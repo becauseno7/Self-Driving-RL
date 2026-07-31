@@ -13,6 +13,7 @@ from self_driving_rl.game_env import (
     decode_action,
     encode_action,
 )
+from self_driving_rl.metrics import format_duration
 
 
 class NeonRenderer:
@@ -425,10 +426,15 @@ class NeonRenderer:
         if total > 0:
             label, value = "TRAINING PROGRESS", f"{step:,} / {total:,}"
         elif env.endless:
-            # There is no finish line to count down to, so report distance
-            # survived instead of a percentage that resets every lap.
-            label = f"LAP {env.laps_completed + 1}  /  {env.ego_position / 1000.0:.2f} km"
-            value = f"{progress * 100:4.1f}%"
+            # No finish line to count down to, so the bar tracks this run
+            # against the longest one of the session.
+            best = float(env.hud_data.get("longest_survival", 0.0))
+            label = (
+                f"SURVIVED {format_duration(env.elapsed_seconds)}"
+                f"   /   {env.ego_position / 1000.0:.2f} km"
+            )
+            value = f"LONGEST {format_duration(max(best, env.elapsed_seconds))}"
+            progress = env.elapsed_seconds / max(best, env.elapsed_seconds, 1.0)
         else:
             label, value = "EPISODE PROGRESS", f"{progress * 100:4.1f}%"
         self._text(label, self.font_tiny, self.MUTED, bar_x, 27)
@@ -531,7 +537,7 @@ class NeonRenderer:
         challenge_count = f"{env.challenges_resolved}/{len(env.challenge_steps)}"
         challenge_label = challenge_count if env.difficulty_mode == "hard" else "STANDARD"
         if env.endless:
-            challenge_label = f"{challenge_label}  LAP {env.laps_completed + 1}"
+            challenge_label = f"{env.challenges_resolved} CLEARED"
         self._metric_pair("CHALLENGES", challenge_label, x + 22, y + 327)
 
         self._divider(x + 20, y + 359, width - 40)
