@@ -102,3 +102,29 @@ at 67 km/h, made +1.31 net passes, and used 6.76 lane changes per route. On the
 separate default evaluation seeds it reached 79% completion and +2.20 net
 passes. This is the configuration promoted to the long run; the pilot model is
 `runs/game/v5-safe-driver-pilot-300k/best_model.zip`.
+
+## Long-run result
+
+The promoted configuration trained for 2.5 million steps on the RTX 4070. Two
+models were retained and evaluated once on the untouched 100-episode seed
+range beginning at 120,000:
+
+| Held-out metric | Safety-selected model | Final live model |
+|---|---:|---:|
+| Completion | **96%** | 91% |
+| Crash | **4%** | 9% |
+| Mean speed | 74 km/h | **90 km/h** |
+| Net overtakes per route | +5.98 | **+15.79** |
+| Lane changes per route | **16.58** | 24.79 |
+| Side impacts | **1** | 6 |
+
+The safety-selected model is the default: it more than doubles the frozen V4
+policy's development net progress and reaches 96% completion on held-out
+evaluation. The final live model is useful as an experimental
+assertive policy, but its extra speed and overtakes do not justify twice as
+many crashes and substantially more lane changes.
+
+```text
+runs/game/v5-good-driver-2p5m-restart/model.zip       # recommended
+runs/game/v5-good-driver-2p5m-restart/last_model.zip  # assertive experiment
+```
