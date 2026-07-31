@@ -13,7 +13,7 @@ from typing import Any
 import numpy as np
 import torch as th
 from stable_baselines3 import DQN
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.callbacks import BaseCallback, CallbackList
 from stable_baselines3.common.monitor import Monitor
 
 from self_driving_rl.game_env import NeonHighwayEnv
@@ -32,6 +32,26 @@ GAME_DQN_CONFIG: dict[str, Any] = {
     "exploration_fraction": 0.4,
     "exploration_initial_eps": 1.0,
     "exploration_final_eps": 0.05,
+}
+
+HIGH_COMPUTE_DQN_CONFIG: dict[str, Any] = {
+    "policy_kwargs": {"net_arch": [256, 256]},
+    "learning_rate": 2e-4,
+    "buffer_size": 250_000,
+    "learning_starts": 5_000,
+    "batch_size": 128,
+    "gamma": 0.98,
+    "train_freq": 4,
+    "gradient_steps": 1,
+    "target_update_interval": 2_000,
+    "exploration_fraction": 0.25,
+    "exploration_initial_eps": 1.0,
+    "exploration_final_eps": 0.02,
+}
+
+DQN_PRESETS = {
+    "standard": GAME_DQN_CONFIG,
+    "high": HIGH_COMPUTE_DQN_CONFIG,
 }
 
 
@@ -89,6 +109,56 @@ class GameHudCallback(BaseCallback):
         return not any(bool(info.get("user_quit", False)) for info in infos)
 
 
+class SafetyEvalCallback(BaseCallback):
+    """Evaluate periodically and retain the safest checkpoint from a long run."""
+
+    def __init__(
+        self,
+        run_dir: Path,
+        *,
+        eval_freq: int,
+        episodes: int,
+        seed: int,
+    ) -> None:
+        super().__init__()
+        self.run_dir = run_dir
+        self.eval_freq = eval_freq
+        self.episodes = episodes
+        self.seed = seed
+        self.next_evaluation = eval_freq
+        self.best_score = (float("-inf"), float("-inf"))
+        self.history: list[dict[str, Any]] = []
+
+    def _on_step(self) -> bool:
+        if self.num_timesteps < self.next_evaluation:
+            return True
+
+        result = _evaluation(self.model, episodes=self.episodes, seed=self.seed)
+        record = {"timesteps": self.num_timesteps, **result}
+        self.history.append(record)
+        (self.run_dir / "validation_history.json").write_text(
+            json.dumps(self.history, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        score = (result["completion_rate"], result["mean_return"])
+        if score > self.best_score:
+            self.best_score = score
+            self.model.save(self.run_dir / "best_model")
+            (self.run_dir / "best_validation.json").write_text(
+                json.dumps(record, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+        print(
+            f"Validation at {self.num_timesteps:,} steps: "
+            f"completion {result['completion_rate']:.0%}, "
+            f"crash {result['crash_rate']:.0%}"
+        )
+        self.next_evaluation += self.eval_freq
+        return True
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="mode", required=True)
@@ -105,6 +175,21 @@ def build_parser() -> argparse.ArgumentParser:
     learn_parser.add_argument("--run-name", type=str, default=None)
     learn_parser.add_argument("--eval-episodes", type=int, default=20)
     learn_parser.add_argument("--headless", action="store_true", help="Train as fast as possible")
+    learn_parser.add_argument(
+        "--preset",
+        choices=sorted(DQN_PRESETS),
+        default="standard",
+        help="DQN capacity/training preset",
+    )
+    learn_parser.add_argument(
+        "--device",
+        choices=["auto", "cpu", "cuda"],
+        default="auto",
+        help="Training device (auto uses CUDA when available)",
+    )
+    learn_parser.add_argument("--validation-freq", type=int, default=25_000)
+    learn_parser.add_argument("--validation-episodes", type=int, default=20)
+    learn_parser.add_argument("--validation-seed", type=int, default=20_000)
 
     watch_parser = subparsers.add_parser("watch", help="Watch the newest or selected trained model")
     watch_parser.add_argument("--model", type=Path, default=None)
@@ -180,9 +265,15 @@ def random_mode(args: argparse.Namespace) -> None:
         env.close()
 
 
-def _evaluation(model: DQN, *, episodes: int, seed: int) -> dict[str, Any]:
+def _evaluation(
+    model: DQN,
+    *,
+    episodes: int,
+    seed: int,
+) -> dict[str, Any]:
     env = NeonHighwayEnv()
     try:
+        _ensure_model_compatible(model, env)
         return evaluate_in_env(
             env,
             lambda observation: int(model.predict(observation, deterministic=True)[0]),
@@ -191,6 +282,20 @@ def _evaluation(model: DQN, *, episodes: int, seed: int) -> dict[str, Any]:
         ).to_dict()
     finally:
         env.close()
+
+
+def _ensure_model_compatible(model: DQN, env: NeonHighwayEnv) -> None:
+    model_shape = getattr(model.observation_space, "shape", None)
+    environment_shape = env.observation_space.shape
+    if model_shape != environment_shape:
+        raise SystemExit(
+            "Model/environment mismatch: "
+            f"the model expects observations shaped {model_shape}, but "
+            f"{env.VERSION} provides {environment_shape}. "
+            "Run `uv run sdr-game watch` without --model to automatically select a "
+            "compatible checkpoint, or train a fresh V2 model with: "
+            "uv run sdr-game learn --timesteps 30000"
+        )
 
 
 def _model_q_values(model: DQN, observation: np.ndarray) -> list[float]:
@@ -219,16 +324,22 @@ def learn_mode(args: argparse.Namespace) -> None:
     if run_dir.exists():
         raise SystemExit(f"Run already exists: {run_dir}")
     run_dir.mkdir(parents=True)
+    dqn_config = DQN_PRESETS[args.preset]
 
     config = {
         "environment": NeonHighwayEnv.VERSION,
         "timesteps": args.timesteps,
         "seed": args.seed,
+        "preset": args.preset,
         "evaluation_seed": 10_000,
         "evaluation_episodes": args.eval_episodes,
+        "validation_frequency": args.validation_freq,
+        "validation_episodes": args.validation_episodes,
+        "validation_seed": args.validation_seed,
         "rendered_training": not args.headless,
         "render_fps": args.fps,
-        "dqn": GAME_DQN_CONFIG,
+        "device": args.device,
+        "dqn": dqn_config,
         "versions": {
             name: importlib.metadata.version(name)
             for name in ["gymnasium", "numpy", "pygame-ce", "stable-baselines3", "torch"]
@@ -248,21 +359,36 @@ def learn_mode(args: argparse.Namespace) -> None:
     model = DQN(
         "MlpPolicy",
         monitored_env,
-        **GAME_DQN_CONFIG,
+        **dqn_config,
         seed=args.seed,
-        device="cpu",
+        device=args.device,
         verbose=1,
         tensorboard_log=str(run_dir / "tensorboard"),
     )
-    callback = GameHudCallback(game_env, args.timesteps)
+    callback = CallbackList(
+        [
+            GameHudCallback(game_env, args.timesteps),
+            SafetyEvalCallback(
+                run_dir,
+                eval_freq=args.validation_freq,
+                episodes=args.validation_episodes,
+                seed=args.validation_seed,
+            ),
+        ]
+    )
 
     try:
         model.learn(total_timesteps=args.timesteps, callback=callback, progress_bar=False)
     except KeyboardInterrupt:
         print("\nTraining interrupted; saving current model.")
     finally:
-        model.save(run_dir / "model")
+        model.save(run_dir / "last_model")
         monitored_env.close()
+
+    best_model_path = run_dir / "best_model.zip"
+    if best_model_path.exists():
+        model = DQN.load(best_model_path, device=args.device)
+    model.save(run_dir / "model")
 
     evaluation = _evaluation(model, episodes=args.eval_episodes, seed=10_000)
     (run_dir / "evaluation.json").write_text(
@@ -279,13 +405,34 @@ def learn_mode(args: argparse.Namespace) -> None:
     )
 
 
-def _latest_model() -> Path:
+def _latest_model(
+    model_directory: Path = Path("runs/game"),
+    required_shape: tuple[int, ...] | None = None,
+) -> Path:
+    if required_shape is None:
+        required_shape = NeonHighwayEnv().observation_space.shape
+
     candidates = sorted(
-        Path("runs/game").glob("*/model.zip"), key=lambda path: path.stat().st_mtime
+        model_directory.glob("*/model.zip"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
     )
     if not candidates:
         raise SystemExit("No trained game model found. Run: uv run sdr-game learn")
-    return candidates[-1]
+
+    for path in candidates:
+        try:
+            model = DQN.load(path, device="cpu")
+        except (OSError, ValueError, KeyError):
+            continue
+        if getattr(model.observation_space, "shape", None) == required_shape:
+            return path
+
+    raise SystemExit(
+        f"No model compatible with {NeonHighwayEnv.VERSION} observations shaped "
+        f"{required_shape} was found. Train one with: "
+        "uv run sdr-game learn --timesteps 30000"
+    )
 
 
 def watch_mode(args: argparse.Namespace) -> None:
@@ -293,6 +440,7 @@ def watch_mode(args: argparse.Namespace) -> None:
     model = DQN.load(model_path, device="cpu")
     env = NeonHighwayEnv(render_mode="human", render_fps=args.fps)
     try:
+        _ensure_model_compatible(model, env)
         run_policy(
             env,
             lambda observation: model.predict(observation, deterministic=True)[0],
@@ -314,8 +462,13 @@ def main() -> None:
     if args.mode == "random":
         random_mode(args)
     elif args.mode == "learn":
-        if args.timesteps < 1 or args.eval_episodes < 1:
-            raise SystemExit("--timesteps and --eval-episodes must be at least 1")
+        if min(
+            args.timesteps,
+            args.eval_episodes,
+            args.validation_freq,
+            args.validation_episodes,
+        ) < 1:
+            raise SystemExit("Training, evaluation, and validation values must be at least 1")
         learn_mode(args)
     elif args.mode == "watch":
         watch_mode(args)

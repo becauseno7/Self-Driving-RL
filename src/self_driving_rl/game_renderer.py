@@ -299,7 +299,7 @@ class NeonRenderer:
             (39, 217, 235),
             2,
             agent=True,
-            braking=env.last_action == 4,
+            braking=env.brake > 0.05,
             turn_direction=turn_direction,
         )
 
@@ -382,7 +382,7 @@ class NeonRenderer:
     def _draw_header(self, env: NeonHighwayEnv) -> None:
         self._glass_panel(pygame.Rect(18, 16, self.WIDTH - 36, 66), alpha=226, radius=18)
         self._text("NEON HIGHWAY", self.font_medium, self.CYAN, 40, 29)
-        self._text("REINFORCEMENT LEARNING LAB / V1", self.font_tiny, self.MUTED, 40, 55)
+        self._text("REINFORCEMENT LEARNING LAB / V2", self.font_tiny, self.MUTED, 40, 55)
 
         total = int(env.hud_data.get("training_total", 0))
         step = int(env.hud_data.get("training_step", 0))
@@ -450,8 +450,24 @@ class NeonRenderer:
         self._text(f"{env.ego_speed * 3.6:03.0f}", self.font_speed, self.TEXT, x + 20, y + 48)
         self._text("km/h", self.font_small_bold, self.MUTED, x + 154, y + 90)
         self._pill(f"LANE {env.target_lane + 1}/{env.LANES}", x + 205, y + 58, self.CYAN)
-        self._metric_pair("ACTION", env._info()["action"], x + 22, y + 128)
-        self._metric_pair("STEP REWARD", f"{env.last_reward:+.3f}", x + 22, y + 160)
+        self._text("TARGET SPEED", self.font_tiny, self.MUTED, x + 205, y + 94)
+        self._text(
+            f"{env.target_speed * 3.6:03.0f} km/h",
+            self.font_small_bold,
+            self.CYAN,
+            x + 205,
+            y + 111,
+        )
+        self._text(
+            f"ACCEL {env.longitudinal_acceleration:+.2f} m/s2",
+            self.font_tiny,
+            self.MUTED,
+            x + 22,
+            y + 114,
+        )
+        self._metric_pair("ACTION", env._info()["action"], x + 22, y + 139)
+        self._pedal_bar("THROTTLE", env.throttle, x + 22, y + 174, 126, self.GREEN)
+        self._pedal_bar("BRAKE", env.brake, x + 164, y + 174, 126, self.RED)
 
         self._divider(x + 20, y + 198, width - 40)
         self._section_title("SAFETY RADAR", x + 22, y + 215, self.AMBER)
@@ -500,7 +516,7 @@ class NeonRenderer:
             q_values = [0.0] * 5
         minimum, maximum = min(q_values), max(q_values)
         spread = maximum - minimum
-        names = ["LEFT", "HOLD", "RIGHT", "FAST", "SLOW"]
+        names = ["LEFT", "HOLD", "RIGHT", "SPD+", "SPD-"]
         for index, (name, value) in enumerate(zip(names, q_values, strict=True)):
             row_y = y + index * 17
             normalized = (value - minimum) / spread if spread > 1e-6 else 0.5
@@ -519,7 +535,7 @@ class NeonRenderer:
     def _draw_action_strip(self, env: NeonHighwayEnv) -> None:
         x, y, width = self.ROAD_LEFT + 25, self.HEIGHT - 66, self.ROAD_WIDTH - 50
         self._glass_panel(pygame.Rect(x, y, width, 43), alpha=220, radius=15)
-        labels = ["LANE LEFT", "HOLD", "LANE RIGHT", "FASTER", "SLOWER"]
+        labels = ["LANE LEFT", "HOLD TARGET", "LANE RIGHT", "SPEED +", "SPEED -"]
         button_width = (width - 24) // 5
         for index, label in enumerate(labels):
             button_x = x + 8 + index * button_width
@@ -547,10 +563,10 @@ class NeonRenderer:
             self.HEIGHT - 20,
         )
         self._text(
-            "OBSERVATION: KINEMATICS / POLICY: DQN",
+            "OBSERVATION: KINEMATICS + TARGET / POLICY: DQN",
             self.font_tiny,
             self.MUTED,
-            1130,
+            1080,
             self.HEIGHT - 20,
         )
 
@@ -687,6 +703,24 @@ class NeonRenderer:
             border_radius=3,
         )
         self._text(f"{value:+.3f}", self.font_tiny, self.TEXT, x + width - 43, y - 5)
+
+    def _pedal_bar(
+        self,
+        label: str,
+        value: float,
+        x: int,
+        y: int,
+        width: int,
+        color: tuple[int, int, int],
+    ) -> None:
+        self._text(label, self.font_tiny, self.MUTED, x, y - 13)
+        pygame.draw.rect(self.screen, (25, 35, 49), (x, y + 5, width, 8), border_radius=4)
+        pygame.draw.rect(
+            self.screen,
+            color,
+            (x, y + 5, max(2, int(width * value)), 8),
+            border_radius=4,
+        )
 
     def _gauge(
         self,

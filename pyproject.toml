@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "self-driving-rl"
-version = "0.1.0"
+version = "0.2.0"
 description = "A learning-focused reinforcement learning project for simulated driving."
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -15,6 +15,7 @@ dependencies = [
     "pygame-ce==2.5.7",
     "stable-baselines3==2.9.0",
     "tensorboard==2.20.0",
+    "torch==2.13.0",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +37,14 @@ packages = ["src/self_driving_rl"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
 
 [tool.ruff]
 line-length = 100

@@ -87,8 +87,10 @@ Generated runs are intentionally excluded from Git.
 5. **Harder driving** — tune observations/rewards, add continuous control, then
    progress to image observations or a simulator such as CARLA.
 
-The RTX 4070 will matter more for image-based policies later. This first MLP is
-small, and Stable-Baselines3 generally runs it more efficiently on the CPU.
+The project is configured for the CUDA 12.6 PyTorch build, which runs on the
+RTX 4070 with the installed NVIDIA driver. The small standard MLP may still be
+environment-bound; the high-compute preset uses a larger network and extra
+gradient updates so the GPU has more useful work to do.
 
 ## Neon Highway game
 
@@ -107,6 +109,16 @@ Watch DQN learn from its crashes and save the result:
 ```powershell
 uv run sdr-game learn --timesteps 30000
 ```
+
+Run the larger GPU-oriented configuration headlessly:
+
+```powershell
+uv run sdr-game learn --preset high --device cuda --headless --timesteps 200000
+```
+
+Long runs validate periodically on a separate fixed seed set. The final
+`model.zip` is the safest checkpoint seen during training; `last_model.zip`
+is also kept so later-policy regression remains inspectable.
 
 Training is intentionally capped at 120 rendered frames per second. Use
 `--headless` for maximum speed. Press `Space` to pause, `H` to hide sensor rays,
@@ -130,6 +142,27 @@ learning curves, and action Q-value displays.
 
 See [docs/neon-highway-v1.md](docs/neon-highway-v1.md) for a readable tour of
 the game logic and dashboard.
+
+### V2 speed control
+
+V2 adds a visible target speed and smooth cruise-control dynamics. `SPEED +`
+and `SPEED -` adjust the target by 3.6 km/h, while throttle and brake pressure
+move the actual car speed toward it. The dashboard shows both speeds,
+acceleration, and pedal pressure.
+
+This changes the observation from 15 to 16 values, so V2 requires a newly
+trained model. See [docs/neon-highway-v2.md](docs/neon-highway-v2.md).
+
+Watch the selected local V2 policy with:
+
+```powershell
+uv run sdr-game watch --model runs/game/v2-high-stable-200k/model.zip
+```
+
+The selected high-compute checkpoint completed 67% and 72% of two separate
+100-episode evaluation sets. The previous V2 model completed 57% and 55% on
+the same traffic seeds. Periodic validation selected the 125k-step checkpoint;
+training continued to 200k without overwriting that stronger policy.
 
 ## Collaboration style
 

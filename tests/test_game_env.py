@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from self_driving_rl.game_env import IDLE, NeonHighwayEnv
+from self_driving_rl.game_env import FASTER, IDLE, LANE_LEFT, NeonHighwayEnv
 
 
 def test_game_environment_contract() -> None:
@@ -13,7 +13,7 @@ def test_game_environment_contract() -> None:
     finally:
         env.close()
 
-    assert observation.shape == (15,)
+    assert observation.shape == (16,)
     assert observation.dtype == np.float32
     assert env.observation_space.contains(observation)
     assert env.observation_space.contains(next_observation)
@@ -33,6 +33,48 @@ def test_game_environment_contract() -> None:
     }
     assert np.isclose(sum(next_info["reward_components"].values()), reward)
     assert next_info["ttc"] > 0
+
+
+def test_target_speed_produces_smooth_acceleration() -> None:
+    env = NeonHighwayEnv()
+    try:
+        env.reset(seed=8)
+        starting_speed = env.ego_speed
+        starting_target = env.target_speed
+
+        _, _, _, _, faster_info = env.step(FASTER)
+        speed_after_press = env.ego_speed
+
+        for _ in range(20):
+            env.step(IDLE)
+    finally:
+        env.close()
+
+    assert env.target_speed == starting_target + env.TARGET_SPEED_STEP
+    assert starting_speed < speed_after_press < env.target_speed
+    assert env.ego_speed > speed_after_press
+    assert abs(env.ego_speed - env.target_speed) < 0.05
+    assert 0.0 <= env.throttle <= 1.0
+    assert 0.0 <= env.brake <= 1.0
+    assert faster_info["reward_components"]["comfort"] < 0.0
+
+
+def test_unsafe_lane_change_gets_immediate_safety_penalty() -> None:
+    env = NeonHighwayEnv()
+    try:
+        env.reset(seed=14)
+        env.target_lane = 1
+        env.lane_position = 1.0
+        blocking_car = next(car for car in env.traffic if car.lane == 0)
+        blocking_car.position = env.ego_position + 8.0
+
+        action_result = env._apply_action(LANE_LEFT)
+        env._reward(action_result)
+    finally:
+        env.close()
+
+    assert action_result["unsafe_lane_change"] is True
+    assert env.last_reward_components["safety"] <= -env.UNSAFE_LANE_CHANGE_COST
 
 
 def test_game_reset_is_reproducible() -> None:

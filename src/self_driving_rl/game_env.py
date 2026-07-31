@@ -54,7 +54,7 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
 
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 60}
 
-    VERSION = "NeonHighwayEnv-v1"
+    VERSION = "NeonHighwayEnv-v2"
     LANES = 4
     DT = 0.1
     MIN_SPEED = 8.0
@@ -63,6 +63,12 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
     EPISODE_SECONDS = 45.0
     CAR_LENGTH = 4.6
     LANE_COLLISION_WIDTH = 0.42
+    TARGET_SPEED_STEP = 1.0
+    MAX_ACCELERATION = 2.8
+    MAX_BRAKING = 5.2
+    SPEED_CONTROLLER_GAIN = 1.8
+    TARGET_CHANGE_COMFORT_COST = 0.006
+    UNSAFE_LANE_CHANGE_COST = 0.28
 
     def __init__(
         self,
@@ -81,15 +87,25 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         self.traffic_per_lane = traffic_per_lane
         self.action_space = gym.spaces.Discrete(5)
 
-        # speed, lane position, target lane, then for each lane:
+        # speed, target speed, lane position, target lane, then for each lane:
         # distance ahead, relative speed ahead, distance behind.
-        low = np.array([0.0, 0.0, 0.0] + [0.0, -1.0, 0.0] * self.LANES, dtype=np.float32)
-        high = np.array([1.0, 1.0, 1.0] + [1.0, 1.0, 1.0] * self.LANES, dtype=np.float32)
+        low = np.array(
+            [0.0, 0.0, 0.0, 0.0] + [0.0, -1.0, 0.0] * self.LANES,
+            dtype=np.float32,
+        )
+        high = np.array(
+            [1.0, 1.0, 1.0, 1.0] + [1.0, 1.0, 1.0] * self.LANES,
+            dtype=np.float32,
+        )
         self.observation_space = gym.spaces.Box(low=low, high=high, dtype=np.float32)
 
         self.ego_position = 0.0
         self.previous_ego_position = 0.0
         self.ego_speed = 22.0
+        self.target_speed = 22.0
+        self.longitudinal_acceleration = 0.0
+        self.throttle = 0.0
+        self.brake = 0.0
         self.lane_position = 1.0
         self.target_lane = 1
         self.traffic: list[TrafficCar] = []
@@ -145,6 +161,10 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         self.ego_position = 0.0
         self.previous_ego_position = 0.0
         self.ego_speed = 22.0
+        self.target_speed = 22.0
+        self.longitudinal_acceleration = 0.0
+        self.throttle = 0.0
+        self.brake = 0.0
         self.target_lane = int(self.np_random.integers(1, 3))
         self.lane_position = float(self.target_lane)
         self.step_count = 0
@@ -230,6 +250,7 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         invalid = False
         lane_change_started = False
         safe_lane_change = False
+        speed_target_changed = False
         lane_change_finished = abs(self.lane_position - self.target_lane) < 0.05
 
         if action in {LANE_LEFT, LANE_RIGHT} and lane_change_finished:
@@ -248,24 +269,36 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
                 invalid = True
                 self.invalid_actions += 1
         elif action == FASTER:
-            if self.ego_speed >= self.MAX_SPEED:
+            if self.target_speed >= self.MAX_SPEED:
                 invalid = True
                 self.invalid_actions += 1
-            self.ego_speed = min(self.MAX_SPEED, self.ego_speed + 1.5)
+            self.target_speed = min(
+                self.MAX_SPEED,
+                self.target_speed + self.TARGET_SPEED_STEP,
+            )
+            speed_target_changed = not invalid
         elif action == SLOWER:
-            if self.ego_speed <= self.MIN_SPEED:
+            if self.target_speed <= self.MIN_SPEED:
                 invalid = True
                 self.invalid_actions += 1
-            self.ego_speed = max(self.MIN_SPEED, self.ego_speed - 1.5)
+            self.target_speed = max(
+                self.MIN_SPEED,
+                self.target_speed - self.TARGET_SPEED_STEP,
+            )
+            speed_target_changed = not invalid
 
         return {
             "invalid": invalid,
+            "lane_change_requested": action in {LANE_LEFT, LANE_RIGHT},
             "lane_change_started": lane_change_started,
             "safe_lane_change": safe_lane_change,
+            "unsafe_lane_change": lane_change_started and not safe_lane_change,
+            "speed_target_changed": speed_target_changed,
         }
 
     def _update_motion(self) -> None:
         self.previous_ego_position = self.ego_position
+        self._update_ego_speed()
         lane_delta = np.clip(self.target_lane - self.lane_position, -0.24, 0.24)
         self.lane_position += float(lane_delta)
         if abs(self.lane_position - self.target_lane) < 0.02:
@@ -279,6 +312,31 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
             car.braking = speed_delta < -0.08
             car.speed = float(np.clip(car.speed + speed_delta, self.MIN_SPEED, self.MAX_SPEED))
             car.position += car.speed * self.DT
+
+    def _update_ego_speed(self) -> None:
+        speed_error = self.target_speed - self.ego_speed
+        requested_acceleration = speed_error * self.SPEED_CONTROLLER_GAIN
+        acceleration = float(
+            np.clip(
+                requested_acceleration,
+                -self.MAX_BRAKING,
+                self.MAX_ACCELERATION,
+            )
+        )
+        if abs(speed_error) < 0.02:
+            self.ego_speed = self.target_speed
+            acceleration = 0.0
+
+        self.longitudinal_acceleration = acceleration
+        self.throttle = max(acceleration / self.MAX_ACCELERATION, 0.0)
+        self.brake = max(-acceleration / self.MAX_BRAKING, 0.0)
+        self.ego_speed = float(
+            np.clip(
+                self.ego_speed + acceleration * self.DT,
+                self.MIN_SPEED,
+                self.MAX_SPEED,
+            )
+        )
 
     def _traffic_target_speed(self, car: TrafficCar) -> float:
         leaders: list[tuple[float, float]] = [
@@ -405,8 +463,13 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
             components["safety"] -= 0.22 * threat["level"]
         if action_result["safe_lane_change"] and threat["level"] > 0.15:
             components["safety"] += 0.05
-        if action_result["lane_change_started"]:
+        if action_result["unsafe_lane_change"]:
+            components["safety"] -= self.UNSAFE_LANE_CHANGE_COST
+        if action_result["lane_change_requested"]:
             components["comfort"] -= 0.012
+        if action_result["speed_target_changed"]:
+            components["comfort"] -= self.TARGET_CHANGE_COMFORT_COST
+        components["comfort"] -= 0.004 * (abs(self.longitudinal_acceleration) / self.MAX_BRAKING)
         if action_result["invalid"]:
             components["rules"] -= 0.08
         if self.crashed:
@@ -448,9 +511,15 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
 
     def _observation(self) -> NDArray[np.float32]:
         speed = (self.ego_speed - self.MIN_SPEED) / (self.MAX_SPEED - self.MIN_SPEED)
+        target_speed = (self.target_speed - self.MIN_SPEED) / (self.MAX_SPEED - self.MIN_SPEED)
         lane = self.lane_position / (self.LANES - 1)
         target_lane = self.target_lane / (self.LANES - 1)
-        values = [float(np.clip(speed, 0.0, 1.0)), lane, target_lane]
+        values = [
+            float(np.clip(speed, 0.0, 1.0)),
+            float(np.clip(target_speed, 0.0, 1.0)),
+            lane,
+            target_lane,
+        ]
 
         for ahead_gap, relative_speed, behind_gap in self.lane_sensors():
             values.extend(
@@ -466,6 +535,10 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         threat = self.current_threat()
         return {
             "speed": self.ego_speed,
+            "target_speed": self.target_speed,
+            "acceleration": self.longitudinal_acceleration,
+            "throttle": self.throttle,
+            "brake": self.brake,
             "crashed": self.crashed,
             "completed": self.completed,
             "lane": self.lane_position,
