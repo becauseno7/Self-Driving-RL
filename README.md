@@ -120,12 +120,24 @@ Long runs validate periodically on a separate fixed seed set. The final
 `model.zip` is the safest checkpoint seen during training; `last_model.zip`
 is also kept so later-policy regression remains inspectable.
 
-The game plays back in real time: each 0.1 s simulation step is drawn as
-several interpolated frames rather than one, so motion is smooth instead of
-jumping 14 pixels per frame. `--speed` sets world seconds per real second
-(`watch` and `random` default to 1.0, `learn` to 12.0). Use `--headless` for
-maximum training speed. Press `Space` to pause, `H` to hide sensor rays, or
-`Esc` to stop safely and save the current model.
+Each 0.1 s simulation step is drawn as several interpolated frames rather
+than one, so motion is smooth instead of jumping 14 pixels per frame.
+
+`--speed` sets world seconds per real second. Pace and smoothness trade off
+against each other at a fixed refresh rate, because the simulation itself only
+ticks at 10 Hz:
+
+| `--speed` | Frames per step at 60 fps | Feel |
+|---|---:|---|
+| 1 | 6 | real time, very smooth, slow |
+| 3 (default) | 2 | brisk and still smooth |
+| 6 | 1 | original pace, original choppiness |
+
+Raise `--fps` as well if your monitor runs above 60 Hz: frames per step is
+`round(fps * 0.1 / speed)`, so `--fps 120 --speed 3` gives four. `learn`
+defaults to `--speed 12`, which keeps rendered training exactly as fast as it
+was. Use `--headless` for maximum training speed. Press `Space` to pause, `H`
+to hide sensor rays, or `Esc` to stop safely and save the current model.
 
 Nothing is ever teleported where the player can see it. Traffic that needs to
 form a challenge changes its speed and closes the gap over a few seconds;

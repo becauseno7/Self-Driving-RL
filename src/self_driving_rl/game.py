@@ -272,8 +272,13 @@ def build_parser() -> argparse.ArgumentParser:
     random_parser.add_argument(
         "--speed",
         type=float,
-        default=1.0,
-        help="World seconds per real second (1.0 = real time)",
+        default=3.0,
+        help=(
+            "World seconds per real second. Pace and smoothness trade off at a "
+            "fixed refresh rate: at 60 fps you get round(6 / speed) frames per "
+            "simulation step, so 1=six frames, 3=two, 6=one. Raise --fps too if "
+            "your monitor runs above 60 Hz."
+        ),
     )
     random_parser.add_argument(
         "--difficulty",
@@ -289,7 +294,7 @@ def build_parser() -> argparse.ArgumentParser:
     random_parser.add_argument(
         "--endless",
         action="store_true",
-        help="Never finish: banked routes become laps and only a crash restarts",
+        help="Never finish: one continuous drive that only a crash restarts",
     )
 
     learn_parser = subparsers.add_parser("learn", help="Watch DQN learn while it drives")
@@ -353,7 +358,7 @@ def build_parser() -> argparse.ArgumentParser:
     learn_parser.add_argument(
         "--endless",
         action="store_true",
-        help="Never finish: banked routes become laps and only a crash restarts",
+        help="Never finish: one continuous drive that only a crash restarts",
     )
 
     evaluate_parser = subparsers.add_parser(
@@ -384,7 +389,7 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument(
         "--endless",
         action="store_true",
-        help="Never finish: banked routes become laps and only a crash restarts",
+        help="Never finish: one continuous drive that only a crash restarts",
     )
 
     watch_parser = subparsers.add_parser("watch", help="Watch the newest or selected trained model")
@@ -395,8 +400,13 @@ def build_parser() -> argparse.ArgumentParser:
     watch_parser.add_argument(
         "--speed",
         type=float,
-        default=1.0,
-        help="World seconds per real second (1.0 = real time)",
+        default=3.0,
+        help=(
+            "World seconds per real second. Pace and smoothness trade off at a "
+            "fixed refresh rate: at 60 fps you get round(6 / speed) frames per "
+            "simulation step, so 1=six frames, 3=two, 6=one. Raise --fps too if "
+            "your monitor runs above 60 Hz."
+        ),
     )
     watch_parser.add_argument(
         "--difficulty",
@@ -412,7 +422,7 @@ def build_parser() -> argparse.ArgumentParser:
     watch_parser.add_argument(
         "--endless",
         action="store_true",
-        help="Never finish: banked routes become laps and only a crash restarts",
+        help="Never finish: one continuous drive that only a crash restarts",
     )
     return parser
 
