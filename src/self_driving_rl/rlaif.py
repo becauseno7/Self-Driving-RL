@@ -42,6 +42,7 @@ from self_driving_rl.game_env import (
     decode_action,
     encode_action,
 )
+from self_driving_rl.longitudinal import LongitudinalIntentPolicy
 from self_driving_rl.metrics import evaluate_in_env
 from self_driving_rl.symmetry import MirrorSymmetry
 
@@ -1826,6 +1827,8 @@ def evaluate_override(args: argparse.Namespace) -> None:
     policy = load_override_policy(
         args.base_model, args.override_model, device=args.device, thresholds=thresholds
     )
+    if args.longitudinal_intent:
+        policy = LongitudinalIntentPolicy(policy)
     env = NeonHighwayEnv(difficulty_mode=args.difficulty)
     try:
         result = evaluate_in_env(
@@ -1845,6 +1848,8 @@ def watch_override(args: argparse.Namespace) -> None:
     policy = load_override_policy(
         args.base_model, args.override_model, device=args.device, thresholds=thresholds
     )
+    if args.longitudinal_intent:
+        policy = LongitudinalIntentPolicy(policy)
     env = NeonHighwayEnv(
         render_mode="human",
         render_fps=args.fps,
@@ -2032,6 +2037,11 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     evaluate_parser.add_argument("--calm-threshold", type=float, default=None)
     evaluate_parser.add_argument("--passing-threshold", type=float, default=None)
+    evaluate_parser.add_argument(
+        "--longitudinal-intent",
+        action="store_true",
+        help="Use the V7 persistent speed-intent controller",
+    )
     evaluate_parser.add_argument("--output", type=Path, default=None)
     evaluate_parser.set_defaults(handler=evaluate_override)
 
@@ -2048,6 +2058,11 @@ def build_parser() -> argparse.ArgumentParser:
     watch_parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     watch_parser.add_argument("--calm-threshold", type=float, default=None)
     watch_parser.add_argument("--passing-threshold", type=float, default=None)
+    watch_parser.add_argument(
+        "--longitudinal-intent",
+        action="store_true",
+        help="Use the V7 persistent speed-intent controller",
+    )
     watch_parser.add_argument("--fps", type=int, default=60)
     watch_parser.add_argument("--speed", type=float, default=1.0)
     watch_parser.add_argument("--seconds", type=float, default=None)

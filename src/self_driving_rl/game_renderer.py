@@ -630,7 +630,20 @@ class NeonRenderer:
             x + 22,
             y + 114,
         )
-        self._metric_pair("ACTION", env._info()["action"], x + 22, y + 139)
+        driving_intent = env.hud_data.get("driving_intent")
+        if driving_intent:
+            self._metric_pair("INTENT", str(driving_intent), x + 22, y + 139)
+            desired_speed = float(env.hud_data.get("desired_speed", env.target_speed))
+            reason = str(env.hud_data.get("speed_reason", "speed plan"))
+            self._text(
+                f"PLAN {desired_speed * 3.6:.0f} km/h · {reason}",
+                self.font_tiny,
+                self.MUTED,
+                x + 22,
+                y + 159,
+            )
+        else:
+            self._metric_pair("ACTION", env._info()["action"], x + 22, y + 139)
         self._pedal_bar("THROTTLE", env.throttle, x + 22, y + 174, 126, self.GREEN)
         self._pedal_bar("BRAKE", env.brake, x + 164, y + 174, 126, self.RED)
 

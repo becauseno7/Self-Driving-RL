@@ -465,6 +465,7 @@ def run_policy(
                 else [0.0] * ACTION_COUNT
             )
             action = int(choose_action(observation))
+            policy_hud = getattr(choose_action, "hud_data", None)
             env.hud_data.update(
                 {
                     "mode": mode,
@@ -478,6 +479,8 @@ def run_policy(
                     "longest_survival": longest_survival,
                 }
             )
+            if isinstance(policy_hud, dict):
+                env.hud_data.update(policy_hud)
             observation, _, terminated, truncated, info = env.step(action)
 
         if not info.get("user_quit", False):

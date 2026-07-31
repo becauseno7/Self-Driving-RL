@@ -11,6 +11,7 @@ from self_driving_rl.game_env import (
     LANE_RIGHT,
     PEDAL_BRAKE,
     PEDAL_GAS,
+    SLOWER,
     STEER_LEFT,
     STEER_RIGHT,
     NeonHighwayEnv,
@@ -832,6 +833,64 @@ def test_preference_telemetry_counts_missed_passes_and_quick_reversals() -> None
     assert env.missed_passing_opportunities == 1
     assert env.rapid_lane_changes == 1
     assert env.lane_reversals == 1
+
+
+def test_longitudinal_telemetry_finds_clear_braking_and_pedal_reversals() -> None:
+    env = NeonHighwayEnv(difficulty_mode="standard")
+    try:
+        env.reset(seed=612)
+        for index, car in enumerate(env.traffic):
+            car.position = env.ego_position + 300.0 + 10.0 * index
+            car.previous_position = car.position
+        env._invalidate_sensors()
+
+        env.step(SLOWER)
+        _, _, _, _, info = env.step(FASTER)
+    finally:
+        env.close()
+
+    assert info["unjustified_brakes"] == 1
+    assert info["pedal_reversals"] == 1
+    assert info["speed_target_changes"] == 2
+
+
+def test_longitudinal_telemetry_counts_clear_road_stalling() -> None:
+    env = NeonHighwayEnv(difficulty_mode="standard")
+    try:
+        env.reset(seed=613)
+        env.ego_speed = env.CRUISE_SPEED - env.STALL_SPEED_MARGIN - 1.0
+        env.target_speed = env.ego_speed
+        for index, car in enumerate(env.traffic):
+            car.position = env.ego_position + 300.0 + 10.0 * index
+            car.previous_position = car.position
+        env._invalidate_sensors()
+
+        _, _, _, _, info = env.step(IDLE)
+    finally:
+        env.close()
+
+    assert info["clear_road_stall_steps"] == 1
+
+
+def test_renderer_accepts_explanatory_driving_intent_hud() -> None:
+    env = NeonHighwayEnv(render_mode="rgb_array", difficulty_mode="standard")
+    try:
+        env.reset(seed=720)
+        env.hud_data.update(
+            {
+                "driving_intent": "PASS LEFT",
+                "desired_speed": 28.0,
+                "speed_reason": "taking persistent safe pass",
+            }
+        )
+
+        frame = env.render()
+    finally:
+        env.close()
+
+    assert frame is not None
+    assert frame.ndim == 3
+    assert frame.shape[2] == 3
 
 
 def test_wrong_lane_does_not_evade_blocked_traffic_cost() -> None:

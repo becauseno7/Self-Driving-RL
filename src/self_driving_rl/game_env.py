@@ -121,6 +121,10 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
     BLOCKED_WITH_SAFE_PASS_COST = 0.005
     RAPID_LANE_CHANGE_STEPS = 35
     LANE_REVERSAL_WINDOW_STEPS = 60
+    PEDAL_REVERSAL_WINDOW_STEPS = 10
+    CLEAR_ROAD_GAP = 40.0
+    CLEAR_ROAD_TTC = 10.0
+    STALL_SPEED_MARGIN = 5.0
     # A wave is staged every CHALLENGE_INTERVAL_STEPS, so a longer route is a
     # longer endurance test rather than the same three waves with dead time
     # bolted on the end. The default 45 s route gives the familiar three.
@@ -238,6 +242,10 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         self.passing_actions = 0
         self.missed_passing_opportunities = 0
         self.blocked_steps = 0
+        self.speed_target_changes = 0
+        self.pedal_reversals = 0
+        self.unjustified_brakes = 0
+        self.clear_road_stall_steps = 0
         self.invalid_actions = 0
         self.challenges_presented = 0
         self.challenges_resolved = 0
@@ -249,6 +257,8 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         self._passing_opportunity_active = False
         self._last_lane_change_step = -1_000_000
         self._last_lane_change_direction = 0
+        self._last_noncoast_pedal = PEDAL_COAST
+        self._last_noncoast_pedal_step = -1_000_000
         self._previous_potential = 0.0
         self.quit_requested = False
         self.renderer: Any | None = None
@@ -356,6 +366,10 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         self.passing_actions = 0
         self.missed_passing_opportunities = 0
         self.blocked_steps = 0
+        self.speed_target_changes = 0
+        self.pedal_reversals = 0
+        self.unjustified_brakes = 0
+        self.clear_road_stall_steps = 0
         self.invalid_actions = 0
         self.challenges_presented = 0
         self.challenges_resolved = 0
@@ -367,6 +381,8 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         self._passing_opportunity_active = False
         self._last_lane_change_step = -1_000_000
         self._last_lane_change_direction = 0
+        self._last_noncoast_pedal = PEDAL_COAST
+        self._last_noncoast_pedal_step = -1_000_000
         self._spawn_traffic()
         self._maybe_stage_hard_challenge()
         self._invalidate_sensors()
@@ -560,13 +576,44 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
             self.missed_passing_opportunities += 1
         self._passing_opportunity_active = passing_opportunity
         self.last_action = action
+        _, requested_pedal = decode_action(action)
+        threat_before_action = self.current_threat()
+        lane_change_finished = abs(self.lane_position - self.target_lane) < 0.05
+        clear_road_before_action = (
+            lane_change_finished
+            and float(threat_before_action["gap"]) >= self.CLEAR_ROAD_GAP
+            and float(threat_before_action["ttc"]) >= self.CLEAR_ROAD_TTC
+        )
+        if (
+            requested_pedal == PEDAL_BRAKE
+            and clear_road_before_action
+            and self.target_speed <= self.CRUISE_SPEED
+        ):
+            self.unjustified_brakes += 1
+        if requested_pedal != PEDAL_COAST:
+            reversed_pedal = (
+                self._last_noncoast_pedal != PEDAL_COAST
+                and requested_pedal != self._last_noncoast_pedal
+                and self.step_count - self._last_noncoast_pedal_step
+                <= self.PEDAL_REVERSAL_WINDOW_STEPS
+            )
+            self.pedal_reversals += int(reversed_pedal)
+            self._last_noncoast_pedal = requested_pedal
+            self._last_noncoast_pedal_step = self.step_count
         action_result = self._apply_action(action, passing_options=passing_options)
+        self.speed_target_changes += int(bool(action_result["speed_target_changed"]))
         if action_result["passing_maneuver"]:
             self.passing_actions += 1
             self._passing_opportunity_active = False
         elif passing_opportunity:
             self.blocked_steps += 1
         self._update_motion()
+        if (
+            clear_road_before_action
+            and self.ego_speed < self.CRUISE_SPEED - self.STALL_SPEED_MARGIN
+            and self.target_speed <= self.ego_speed + self.TARGET_SPEED_STEP
+        ):
+            self.clear_road_stall_steps += 1
         overtakes, passed_by_traffic = self._traffic_progress_events()
         self._recycle_traffic()
         self.last_collision = self._detect_collision()
@@ -1348,6 +1395,10 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
             "missed_passing_opportunities": self.missed_passing_opportunities,
             "passing_opportunity": bool(self.passing_lane_options()),
             "blocked_steps": self.blocked_steps,
+            "speed_target_changes": self.speed_target_changes,
+            "pedal_reversals": self.pedal_reversals,
+            "unjustified_brakes": self.unjustified_brakes,
+            "clear_road_stall_steps": self.clear_road_stall_steps,
             "distance_m": self.ego_position,
             "invalid_actions": self.invalid_actions,
             "ttc": threat["ttc"],

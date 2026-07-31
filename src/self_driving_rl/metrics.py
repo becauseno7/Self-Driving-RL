@@ -51,6 +51,11 @@ class EvaluationSummary:
     mean_rapid_lane_changes: float
     mean_lane_reversals: float
     mean_missed_passing_opportunities: float
+    mean_speed_target_changes: float
+    mean_pedal_reversals: float
+    mean_unjustified_brakes: float
+    unjustified_brakes_per_1000_steps: float
+    clear_road_stall_rate: float
     overtakes_per_100km: float
     lane_changes_per_100km: float
     lane_changes_per_overtake: float
@@ -98,6 +103,10 @@ def evaluate_in_env(
     rapid_lane_changes: list[int] = []
     lane_reversals: list[int] = []
     missed_passing_opportunities: list[int] = []
+    speed_target_changes: list[int] = []
+    pedal_reversals: list[int] = []
+    unjustified_brakes: list[int] = []
+    clear_road_stall_steps = 0
     passing_opportunities = 0
     passing_actions = 0
     blocked_steps = 0
@@ -105,6 +114,9 @@ def evaluate_in_env(
     for episode in range(episodes):
         episode_seed = seed + episode
         observation, _ = env.reset(seed=episode_seed)
+        reset_policy = getattr(policy, "reset", None)
+        if callable(reset_policy):
+            reset_policy()
         env.action_space.seed(episode_seed)
         terminated = truncated = False
         episode_return = 0.0
@@ -157,6 +169,10 @@ def evaluate_in_env(
         missed_passing_opportunities.append(
             int(final_info.get("missed_passing_opportunities", 0))
         )
+        speed_target_changes.append(int(final_info.get("speed_target_changes", 0)))
+        pedal_reversals.append(int(final_info.get("pedal_reversals", 0)))
+        unjustified_brakes.append(int(final_info.get("unjustified_brakes", 0)))
+        clear_road_stall_steps += int(final_info.get("clear_road_stall_steps", 0))
         passing_opportunities += int(final_info.get("passing_opportunities", 0))
         passing_actions += int(final_info.get("passing_actions", 0))
         blocked_steps += int(final_info.get("blocked_steps", 0))
@@ -187,6 +203,13 @@ def evaluate_in_env(
         mean_rapid_lane_changes=float(np.mean(rapid_lane_changes)),
         mean_lane_reversals=float(np.mean(lane_reversals)),
         mean_missed_passing_opportunities=float(np.mean(missed_passing_opportunities)),
+        mean_speed_target_changes=float(np.mean(speed_target_changes)),
+        mean_pedal_reversals=float(np.mean(pedal_reversals)),
+        mean_unjustified_brakes=float(np.mean(unjustified_brakes)),
+        unjustified_brakes_per_1000_steps=(
+            1000.0 * int(np.sum(unjustified_brakes)) / max(int(np.sum(lengths)), 1)
+        ),
+        clear_road_stall_rate=clear_road_stall_steps / max(int(np.sum(lengths)), 1),
         overtakes_per_100km=(
             100.0 * total_overtakes / distance_km if distance_km > 0.0 else 0.0
         ),
