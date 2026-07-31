@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "self-driving-rl"
+version = "0.1.0"
+description = "A learning-focused reinforcement learning project for simulated driving."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "gymnasium==1.3.0",
+    "highway-env==1.12.0",
+    "numpy==2.3.2",
+    "pygame-ce==2.5.7",
+    "stable-baselines3==2.9.0",
+    "tensorboard==2.20.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.4.1",
+    "ruff==0.12.7",
+]
+
+[project.scripts]
+sdr-game = "self_driving_rl.game:main"
+sdr-inspect = "self_driving_rl.inspect_environment:main"
+sdr-random = "self_driving_rl.random_baseline:main"
+sdr-train = "self_driving_rl.train:main"
+sdr-evaluate = "self_driving_rl.evaluate:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/self_driving_rl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
