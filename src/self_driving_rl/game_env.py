@@ -75,7 +75,7 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
 
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 60}
 
-    VERSION = "NeonHighwayEnv-v4"
+    VERSION = "NeonHighwayEnv-v4.1"
     DIFFICULTY_MODES = {"standard", "hard"}
     LANES = 4
     DT = 0.1
@@ -83,9 +83,9 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
     MAX_SPEED = 34.0
     SENSOR_DISTANCE = 90.0
     EPISODE_SECONDS = 45.0
-    # The stretch of road the player can actually see, mirroring the renderer's
-    # camera. Nothing may be teleported inside this window: a car that changes
-    # position or colour on screen reads as a bug, not as traffic.
+    # A continuity guard deliberately wider than the renderer's camera. Nothing
+    # may be teleported inside this window, so cars cannot pop or restyle while
+    # crossing either screen edge after interpolation or camera-scale changes.
     VISIBLE_BEHIND = 34.0
     VISIBLE_AHEAD = 102.0
     CAR_LENGTH = 4.6
@@ -809,48 +809,101 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         car.style = int(self.np_random.integers(0, 3))
         car.braking = False
 
-    def _swept_lateral_gap(self, lane: int) -> float:
-        """Smallest lateral distance to `lane` swept during this step.
+    @staticmethod
+    def _swept_overlap_interval(
+        start_gap: float,
+        end_gap: float,
+        contact_distance: float,
+    ) -> tuple[float, float] | None:
+        """When a linearly moving gap lies inside a contact distance.
 
-        The ego moves up to 0.24 lanes per step, so testing only the end-of-step
-        position leaves a hole in the middle of every merge where no lane centre
-        is within LANE_COLLISION_WIDTH.
+        Returning the interval, rather than checking each axis independently,
+        matters for a diagonal merge: longitudinal and lateral overlap must
+        happen at the same time. It also catches a complete pass between two
+        simulation frames and treats visibly touching bodywork as contact.
         """
-        previous = float(lane) - self.previous_lane_position
-        current = float(lane) - self.lane_position
-        if previous * current <= 0.0:
-            return 0.0
-        return min(abs(previous), abs(current))
+        movement = end_gap - start_gap
+        epsilon = 1e-9
+        if abs(movement) <= epsilon:
+            if abs(start_gap) <= contact_distance + epsilon:
+                return 0.0, 1.0
+            return None
+
+        first = (-contact_distance - start_gap) / movement
+        second = (contact_distance - start_gap) / movement
+        entry = max(0.0, min(first, second))
+        exit_ = min(1.0, max(first, second))
+        if entry <= exit_ + epsilon:
+            return entry, exit_
+        return None
 
     def _detect_collision(self) -> CollisionEvent | None:
-        hits: list[tuple[float, TrafficCar]] = []
+        hits: list[tuple[float, float, TrafficCar, float, float]] = []
         for car in self.traffic:
-            previous_gap = car.previous_position - self.previous_ego_position
-            current_gap = car.position - self.ego_position
-            crossed_between_frames = previous_gap * current_gap <= 0.0
-            longitudinal_overlap = abs(current_gap) < self.CAR_LENGTH or crossed_between_frames
-            if longitudinal_overlap and self._swept_lateral_gap(car.lane) < (
-                self.LANE_COLLISION_WIDTH
-            ):
-                hits.append((abs(current_gap), car))
+            previous_longitudinal = car.previous_position - self.previous_ego_position
+            current_longitudinal = car.position - self.ego_position
+            longitudinal_interval = self._swept_overlap_interval(
+                previous_longitudinal,
+                current_longitudinal,
+                self.CAR_LENGTH,
+            )
+            if longitudinal_interval is None:
+                continue
+
+            previous_lateral = float(car.lane) - self.previous_lane_position
+            current_lateral = float(car.lane) - self.lane_position
+            lateral_interval = self._swept_overlap_interval(
+                previous_lateral,
+                current_lateral,
+                self.LANE_COLLISION_WIDTH,
+            )
+            if lateral_interval is None:
+                continue
+
+            contact_time = max(longitudinal_interval[0], lateral_interval[0])
+            contact_end = min(longitudinal_interval[1], lateral_interval[1])
+            if contact_time > contact_end + 1e-9:
+                continue
+
+            longitudinal_at_contact = previous_longitudinal + (
+                current_longitudinal - previous_longitudinal
+            ) * contact_time
+            lateral_at_contact = previous_lateral + (
+                current_lateral - previous_lateral
+            ) * contact_time
+            hits.append(
+                (
+                    contact_time,
+                    abs(longitudinal_at_contact),
+                    car,
+                    longitudinal_at_contact,
+                    lateral_at_contact,
+                )
+            )
 
         if not hits:
             return None
 
-        # Report the car actually struck, not whichever one happens to come
-        # first in the traffic list.
-        _, car = min(hits, key=lambda hit: hit[0])
-        current_gap = car.position - self.ego_position
-        lateral_gap = abs(float(car.lane) - self.lane_position)
-        changing_lanes = abs(self.lane_position - self.target_lane) > 0.05
-        if changing_lanes or lateral_gap > 0.2:
+        # The first contact is the crash. Distance breaks ties when two cars
+        # touch on the same integration frame.
+        contact_time, _, car, contact_gap, contact_lateral = min(
+            hits, key=lambda hit: (hit[0], hit[1])
+        )
+        lateral_motion = self.lane_position - self.previous_lane_position
+        changing_lanes = (
+            abs(lateral_motion) > 1e-6
+            or abs(self.lane_position - self.target_lane) > 0.05
+        )
+        if changing_lanes or abs(contact_lateral) > 0.2:
             kind = "SIDE IMPACT"
-        elif current_gap >= 0.0:
+        elif contact_gap >= 0.0:
             kind = "FRONT IMPACT"
         else:
             kind = "REAR IMPACT"
 
-        lateral_impact = 4.0 if changing_lanes else 0.0
+        lateral_impact = (
+            abs(lateral_motion) * self.LANE_WIDTH / self.DT if changing_lanes else 0.0
+        )
         impact_speed = abs(self.ego_speed - car.speed) + lateral_impact
         if impact_speed < 4.0:
             severity = "LOW"
@@ -862,7 +915,7 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
             kind=kind,
             severity=severity,
             impact_speed=impact_speed,
-            relative_position=current_gap,
+            relative_position=contact_gap,
             traffic_speed=car.speed,
             lane=car.lane,
         )

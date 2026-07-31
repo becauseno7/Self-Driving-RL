@@ -96,3 +96,63 @@ def test_qrdqn_preset_adds_quantiles_without_touching_dqn() -> None:
     assert qrdqn_kwargs["policy_kwargs"]["n_quantiles"] == 64
     assert qrdqn_kwargs["policy_kwargs"]["net_arch"] == [256, 256]
     assert base["policy_kwargs"] == {"net_arch": [256, 256]}, "the preset was mutated"
+
+
+def test_watch_defaults_to_three_interpolated_frames_per_step() -> None:
+    args = game.build_parser().parse_args(["watch"])
+
+    assert args.fps == 60
+    assert args.speed == 2.0
+
+
+def test_random_evaluation_can_create_an_endless_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: dict[str, object] = {}
+
+    class StubEnv:
+        def __init__(self, **kwargs: object) -> None:
+            created.update(kwargs)
+
+        def close(self) -> None:
+            created["closed"] = True
+
+    monkeypatch.setattr(game, "NeonHighwayEnv", StubEnv)
+    monkeypatch.setattr(
+        game,
+        "evaluate_in_env",
+        lambda env, policy, *, episodes, seed: SimpleNamespace(
+            to_dict=lambda: {"episodes": episodes, "seed": seed}
+        ),
+    )
+
+    result = game._random_evaluation(
+        episodes=1,
+        seed=17,
+        difficulty_mode="hard",
+        endless=True,
+    )
+
+    assert result == {"episodes": 1, "seed": 17}
+    assert created["endless"] is True
+    assert created["closed"] is True
+
+
+def test_validation_score_uses_survival_for_endless_driving() -> None:
+    shorter_high_return = {
+        "completion_rate": 0.0,
+        "mean_survival_seconds": 80.0,
+        "mean_return": 100.0,
+    }
+    longer_low_return = {
+        "completion_rate": 0.0,
+        "mean_survival_seconds": 120.0,
+        "mean_return": 60.0,
+    }
+
+    assert game.validation_score(
+        longer_low_return, endless=True
+    ) > game.validation_score(shorter_high_return, endless=True)
+    assert game.validation_score(
+        shorter_high_return, endless=False
+    ) > game.validation_score(longer_low_return, endless=False)

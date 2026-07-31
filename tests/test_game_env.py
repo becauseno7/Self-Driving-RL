@@ -17,6 +17,7 @@ from self_driving_rl.game_env import (
     decode_action,
     encode_action,
 )
+from self_driving_rl.game_renderer import NeonRenderer
 
 
 def test_game_environment_contract() -> None:
@@ -248,6 +249,78 @@ def test_no_lane_position_is_immune_to_every_lane() -> None:
     assert not immune, f"nothing can hit the ego at lane {immune}"
 
 
+def test_diagonal_merge_contact_is_detected_at_the_same_instant() -> None:
+    """Regression: visible bodywork merged together without ending the episode."""
+    env = NeonHighwayEnv(difficulty_mode="standard")
+    try:
+        env.reset(seed=101)
+        for car in env.traffic:
+            car.position = env.ego_position + 600.0
+            car.previous_position = car.position
+
+        blocker = env.traffic[0]
+        blocker.lane = 2
+        blocker.previous_position = env.previous_ego_position + env.CAR_LENGTH + 0.8
+        blocker.position = env.ego_position + env.CAR_LENGTH - 0.8
+        blocker.speed = env.ego_speed
+        env.previous_lane_position = 1.30
+        env.lane_position = 1.54
+        env.target_lane = 2
+
+        collision = env._detect_collision()
+    finally:
+        env.close()
+
+    assert collision is not None
+    assert collision.kind == "SIDE IMPACT"
+
+
+def test_axis_overlaps_at_different_times_are_not_a_collision() -> None:
+    """Swept tests must not combine a past longitudinal pass with a later merge."""
+    env = NeonHighwayEnv(difficulty_mode="standard")
+    try:
+        env.reset(seed=102)
+        for car in env.traffic:
+            car.position = env.ego_position + 600.0
+            car.previous_position = car.position
+
+        blocker = env.traffic[0]
+        blocker.lane = 2
+        blocker.previous_position = env.previous_ego_position - env.CAR_LENGTH - 0.2
+        blocker.position = env.ego_position - env.CAR_LENGTH - 4.0
+        env.previous_lane_position = 1.30
+        env.lane_position = 1.54
+        env.target_lane = 2
+
+        collision = env._detect_collision()
+    finally:
+        env.close()
+
+    assert collision is None
+
+
+def test_touching_collision_boundaries_count_as_contact() -> None:
+    env = NeonHighwayEnv(difficulty_mode="standard")
+    try:
+        env.reset(seed=103)
+        for car in env.traffic:
+            car.position = env.ego_position + 600.0
+            car.previous_position = car.position
+
+        blocker = env.traffic[0]
+        blocker.lane = env.target_lane
+        blocker.position = env.ego_position + env.CAR_LENGTH
+        blocker.previous_position = blocker.position
+        env.lane_position = float(env.target_lane)
+        env.previous_lane_position = env.lane_position
+
+        collision = env._detect_collision()
+    finally:
+        env.close()
+
+    assert collision is not None
+
+
 def test_collision_width_matches_a_real_car_in_a_real_lane() -> None:
     """What the renderer draws and what the physics hits must be one number."""
     env = NeonHighwayEnv()
@@ -255,6 +328,19 @@ def test_collision_width_matches_a_real_car_in_a_real_lane() -> None:
         assert env.LANE_COLLISION_WIDTH == env.CAR_WIDTH / env.LANE_WIDTH
         # Must still clear 0.5, or the midpoint of a merge reopens the blind spot.
         assert env.LANE_COLLISION_WIDTH > 0.5
+    finally:
+        env.close()
+
+
+def test_renderer_uses_the_exact_physics_footprint() -> None:
+    env = NeonHighwayEnv()
+    try:
+        width, length = NeonRenderer.car_footprint(env)
+        lane_pixels = NeonRenderer.ROAD_WIDTH / env.LANES
+
+        assert np.isclose(width / lane_pixels, env.LANE_COLLISION_WIDTH)
+        assert np.isclose(length / NeonRenderer.PIXELS_PER_METER, env.CAR_LENGTH)
+        assert length > width, "the camera turned real cars into horizontal bars again"
     finally:
         env.close()
 

@@ -130,7 +130,8 @@ ticks at 10 Hz:
 | `--speed` | Frames per step at 60 fps | Feel |
 |---|---:|---|
 | 1 | 6 | real time, very smooth, slow |
-| 3 (default) | 2 | brisk and still smooth |
+| 2 (default) | 3 | brisk and smooth |
+| 3 | 2 | faster with less interpolation |
 | 6 | 1 | original pace, original choppiness |
 
 Raise `--fps` as well if your monitor runs above 60 Hz: frames per step is
@@ -212,6 +213,9 @@ episodes gave a five-second horizon in which route completion was worth 0.0006.
 - Collisions were attributed to the first car in a list, not the nearest.
 - Sensor gaps were centre-to-centre, so a reported 4.5 m gap was already a crash.
 - Recycled traffic could teleport back and forth between frames.
+- Collision detection now solves continuous overlap on both axes, so a
+  diagonal merge only crashes when the two physical bodies overlap at the
+  same instant—and cannot pass through between simulation frames.
 
 Steering and pedal are now chosen together (9 actions instead of 5), so the
 agent can brake and merge in one step — the manoeuvre the hard waves are built
@@ -275,10 +279,10 @@ uv run sdr-game watch --difficulty hard --endless
 ```
 
 There is no route boundary and nothing resets mid-drive: the clock only counts
-up and waves keep arriving every 15 s, accumulating. Because there is no
-deadline, the episode-clock observation reports "plenty of road left" for the
-whole run, which is the state the agent spends most of training in, so a policy
-trained on fixed routes needs no retraining.
+up and waves keep arriving every 15 s, accumulating. A fixed-route checkpoint
+can be watched in this mode, but it was not optimized for continuous survival.
+Train with `--endless` when endless driving is the metric you want to improve;
+checkpoint selection then ranks policies by survival time.
 
 The header shows time survived, distance, and the longest run of the session.
 `CHALLENGES` shows waves cleared so far.
@@ -290,13 +294,9 @@ eventually, so `evaluate --endless` reports survival time:
 uv run sdr-game evaluate --endless --episodes 30 --seed 30000 50000
 ```
 
-```text
-  seeds 30,000-30,029  mean 4m 28s  longest 19m 02s  waves 17.93
-  seeds 50,000-50,029  mean 3m 14s  longest  9m 39s  waves 12.97
-```
-
-The 2M-step model averages three to four and a half minutes per life and has
-run as long as 19 minutes, clearing 18 waves along the way.
+The bundled 2M-step checkpoint predates smooth wave formation and the V4.1
+continuous collision solver. Treat its endless score as a baseline for the
+next retraining run, not as the expected ceiling.
 
 ## Collaboration style
 

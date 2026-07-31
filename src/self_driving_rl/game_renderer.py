@@ -20,10 +20,13 @@ from self_driving_rl.metrics import format_duration
 class NeonRenderer:
     WIDTH = 1440
     HEIGHT = 810
-    ROAD_WIDTH = 720
+    # A narrower road and closer longitudinal camera keep one physical scale
+    # for cars on both axes. The previous 720 px / 6.4 px-per-metre view turned
+    # a real 4.6 m x 1.9 m car into a 92 x 29 px horizontal bar.
+    ROAD_WIDTH = 520
     ROAD_LEFT = (WIDTH - ROAD_WIDTH) // 2
     EGO_Y = 620
-    PIXELS_PER_METER = 6.4
+    PIXELS_PER_METER = 17.0
 
     CYAN = (56, 223, 239)
     PINK = (249, 74, 127)
@@ -389,17 +392,17 @@ class NeonRenderer:
             turn_direction=turn_direction,
         )
 
-    def car_footprint(self, env: NeonHighwayEnv) -> tuple[float, float]:
+    @classmethod
+    def car_footprint(cls, env: NeonHighwayEnv) -> tuple[float, float]:
         """The exact space a car occupies on screen, in pixels.
 
-        The camera is squashed front-to-back (a lane is 48.6 px/m across but
-        only 6.4 px/m along), so an honest car is wide and short. Drawing a
-        longer sprite than CAR_LENGTH made cars overlap on screen while the
-        physics still called it a clear gap.
+        The sprite and collision system share CAR_WIDTH and CAR_LENGTH. Keeping
+        the two screen scales close gives the body a believable top-down shape
+        without reintroducing visible overlaps that physics calls a clear gap.
         """
-        lane_pixels = self.ROAD_WIDTH / env.LANES
+        lane_pixels = cls.ROAD_WIDTH / env.LANES
         width = env.CAR_WIDTH / env.LANE_WIDTH * lane_pixels
-        length = env.CAR_LENGTH * self.PIXELS_PER_METER
+        length = env.CAR_LENGTH * cls.PIXELS_PER_METER
         return width, length
 
     def _draw_car(
@@ -415,85 +418,113 @@ class NeonRenderer:
         turn_direction: int,
     ) -> None:
         width, height = self.car_footprint(env)
-        x, y = center_x - width / 2.0, center_y - height / 2.0
-        radius = max(3, int(height * 0.34))
+        sprite_width = max(24, int(round(width)))
+        sprite_height = max(36, int(round(height)))
+        sprite = pygame.Surface((sprite_width, sprite_height), pygame.SRCALPHA)
 
-        def box(
-            left: float, top: float, box_width: float, box_height: float
-        ) -> pygame.Rect:
-            """A sub-rectangle placed as a fraction of the car's footprint."""
-            return pygame.Rect(
-                int(x + left * width),
-                int(y + top * height),
-                max(1, int(box_width * width)),
-                max(1, int(box_height * height)),
-            )
+        def point(x_fraction: float, y_fraction: float) -> tuple[int, int]:
+            return int(x_fraction * (sprite_width - 1)), int(y_fraction * (sprite_height - 1))
 
-        pygame.draw.rect(
-            self.screen,
-            (3, 6, 10),
-            box(0.02, 0.10, 1.0, 1.0),
-            border_radius=radius,
+        silhouettes = (
+            # Coupe: tapered nose, pinched waist and broad rear haunches.
+            [(0.28, 0.01), (0.72, 0.01), (0.88, 0.10), (0.96, 0.31),
+             (0.93, 0.76), (0.82, 0.96), (0.18, 0.96), (0.07, 0.76),
+             (0.04, 0.31), (0.12, 0.10)],
+            # Sedan: a balanced bonnet, cabin and luggage deck.
+            [(0.22, 0.01), (0.78, 0.01), (0.91, 0.13), (0.96, 0.36),
+             (0.94, 0.82), (0.82, 0.98), (0.18, 0.98), (0.06, 0.82),
+             (0.04, 0.36), (0.09, 0.13)],
+            # SUV: squarer shoulders and a longer roof.
+            [(0.17, 0.01), (0.83, 0.01), (0.94, 0.12), (0.97, 0.88),
+             (0.86, 0.99), (0.14, 0.99), (0.03, 0.88), (0.06, 0.12)],
         )
+        outline = [point(*coordinates) for coordinates in silhouettes[style % len(silhouettes)]]
+        shadow = [(x + 2, min(y + 3, sprite_height - 1)) for x, y in outline]
+        pygame.draw.polygon(sprite, (1, 4, 8, 170), shadow)
 
-        # Wheels sit proud of the body on both flanks, front and rear.
-        wheel_length, wheel_width = height * 0.30, max(3, int(width * 0.05))
-        for wheel_top in (y + height * 0.06, y + height * 0.64):
-            for wheel_x in (x - wheel_width * 0.6, x + width - wheel_width * 0.4):
-                pygame.draw.rect(
-                    self.screen,
-                    (6, 8, 12),
-                    (int(wheel_x), int(wheel_top), wheel_width, max(2, int(wheel_length))),
-                    border_radius=2,
-                )
-
-        body = pygame.Rect(int(x), int(y), int(width), int(height))
-        pygame.draw.rect(self.screen, color, body, border_radius=radius)
-        highlight = tuple(min(channel + 45, 255) for channel in color)
-        pygame.draw.line(
-            self.screen,
-            highlight,
-            (int(x + width * 0.16), int(y + height * 0.12)),
-            (int(x + width * 0.84), int(y + height * 0.12)),
-            2,
-        )
-
-        # Windscreen forward, rear window aft, cabin between them.
-        cabin_inset = 0.10 + style * 0.02
-        pygame.draw.rect(
-            self.screen, (13, 27, 44), box(cabin_inset, 0.22, 1.0 - 2 * cabin_inset, 0.24),
-            border_radius=max(2, int(height * 0.12)),
-        )
-        pygame.draw.rect(
-            self.screen, (18, 32, 46), box(cabin_inset + 0.04, 0.58, 0.92 - 2 * cabin_inset, 0.22),
-            border_radius=max(2, int(height * 0.10)),
-        )
-
-        for headlight_left in (0.06, 0.82):
+        # Tyres remain inside the physical footprint; mirrors establish its
+        # widest visible points, so touching sprites and touching hitboxes agree.
+        wheel_height = max(8, int(sprite_height * 0.22))
+        wheel_width = max(3, int(sprite_width * 0.07))
+        for wheel_y in (int(sprite_height * 0.18), int(sprite_height * 0.66)):
             pygame.draw.rect(
-                self.screen, (220, 249, 255), box(headlight_left, 0.02, 0.12, 0.12),
+                sprite, (3, 5, 8), (1, wheel_y, wheel_width, wheel_height), border_radius=2
+            )
+            pygame.draw.rect(
+                sprite,
+                (3, 5, 8),
+                (sprite_width - wheel_width - 1, wheel_y, wheel_width, wheel_height),
                 border_radius=2,
             )
-        tail_color = (255, 30, 58) if braking else (203, 36, 69)
-        tail_height = 0.16 if braking else 0.11
-        for tail_left in (0.06, 0.82):
-            pygame.draw.rect(
-                self.screen, tail_color, box(tail_left, 0.98 - tail_height, 0.12, tail_height),
-                border_radius=2,
-            )
+
+        pygame.draw.polygon(sprite, color, outline)
+        body_highlight = tuple(min(channel + 60, 255) for channel in color)
+        pygame.draw.aalines(sprite, body_highlight, True, outline)
+
+        # Side mirrors, bonnet creases and bumpers make the silhouettes read as
+        # actual vehicles instead of rounded UI rectangles.
+        mirror_y = int(sprite_height * (0.34 if style != 2 else 0.29))
+        mirror_size = max(3, int(sprite_width * 0.08))
+        pygame.draw.ellipse(sprite, color, (0, mirror_y, mirror_size, mirror_size - 1))
+        pygame.draw.ellipse(
+            sprite,
+            color,
+            (sprite_width - mirror_size, mirror_y, mirror_size, mirror_size - 1),
+        )
+        crease = tuple(max(channel - 45, 0) for channel in color)
+        pygame.draw.aaline(sprite, crease, point(0.26, 0.08), point(0.33, 0.27))
+        pygame.draw.aaline(sprite, crease, point(0.74, 0.08), point(0.67, 0.27))
+        pygame.draw.aaline(sprite, crease, point(0.17, 0.86), point(0.30, 0.78))
+        pygame.draw.aaline(sprite, crease, point(0.83, 0.86), point(0.70, 0.78))
+
+        glass = (10, 24, 38, 255)
+        glass_highlight = (75, 125, 151, 235)
+        windscreen = [point(0.28, 0.29), point(0.72, 0.29), point(0.79, 0.43), point(0.21, 0.43)]
+        roof = [point(0.21, 0.45), point(0.79, 0.45), point(0.76, 0.61), point(0.24, 0.61)]
+        rear_window = [point(0.24, 0.63), point(0.76, 0.63), point(0.70, 0.76), point(0.30, 0.76)]
+        for window in (windscreen, roof, rear_window):
+            pygame.draw.polygon(sprite, glass, window)
+            pygame.draw.aalines(sprite, glass_highlight, True, window)
+        pygame.draw.aaline(sprite, (126, 167, 186), point(0.31, 0.31), point(0.44, 0.40))
+
+        if style % 3 == 2:
+            pygame.draw.line(sprite, (170, 180, 188), point(0.24, 0.24), point(0.24, 0.78), 2)
+            pygame.draw.line(sprite, (170, 180, 188), point(0.76, 0.24), point(0.76, 0.78), 2)
+
+        headlight = (226, 250, 255)
+        pygame.draw.polygon(
+            sprite,
+            headlight,
+            [point(0.18, 0.05), point(0.36, 0.04), point(0.32, 0.11), point(0.15, 0.12)],
+        )
+        pygame.draw.polygon(
+            sprite,
+            headlight,
+            [point(0.64, 0.04), point(0.82, 0.05), point(0.85, 0.12), point(0.68, 0.11)],
+        )
+        tail_color = (255, 35, 65) if braking else (185, 24, 52)
+        tail_thickness = 4 if braking else 3
+        pygame.draw.line(sprite, tail_color, point(0.17, 0.91), point(0.39, 0.94), tail_thickness)
+        pygame.draw.line(sprite, tail_color, point(0.61, 0.94), point(0.83, 0.91), tail_thickness)
+        pygame.draw.line(sprite, (15, 18, 24), point(0.37, 0.97), point(0.63, 0.97), 2)
 
         if turn_direction != 0 and (pygame.time.get_ticks() // 180) % 2 == 0:
-            signal_x = x + width * (0.10 if turn_direction < 0 else 0.90)
-            pygame.draw.circle(
-                self.screen, self.AMBER, (int(signal_x), int(y + height * 0.88)), 3
-            )
+            signal_x = 0.13 if turn_direction < 0 else 0.87
+            pygame.draw.circle(sprite, self.AMBER, point(signal_x, 0.91), 3)
 
         if agent:
-            pygame.draw.rect(self.screen, (174, 252, 255), body, 2, border_radius=radius)
+            pygame.draw.aalines(sprite, (174, 252, 255), True, outline)
+            pygame.draw.aalines(sprite, self.CYAN, True, outline)
             badge = self.font_tiny.render("RL", True, (225, 255, 255))
-            self.screen.blit(
-                badge, badge.get_rect(center=(int(center_x), int(y + height * 0.45)))
+            sprite.blit(
+                badge,
+                badge.get_rect(center=point(0.50, 0.54)),
             )
+
+        self.screen.blit(
+            sprite,
+            (int(round(center_x - sprite_width / 2)), int(round(center_y - sprite_height / 2))),
+        )
 
     def _draw_header(self, env: NeonHighwayEnv) -> None:
         self._glass_panel(pygame.Rect(18, 16, self.WIDTH - 36, 66), alpha=226, radius=18)
@@ -719,7 +750,7 @@ class NeonRenderer:
         self._glass_panel(pygame.Rect(x, y, width, 43), alpha=220, radius=15)
         steer, pedal = decode_action(env.last_action)
         groups = (
-            (["LANE LEFT", "KEEP LANE", "LANE RIGHT"], steer, 0),
+            (["LEFT", "KEEP", "RIGHT"], steer, 0),
             (["BRAKE", "COAST", "GAS"], pedal, 1),
         )
         half = (width - 24) // 2

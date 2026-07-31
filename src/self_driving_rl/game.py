@@ -243,7 +243,7 @@ class SafetyEvalCallback(BaseCallback):
             encoding="utf-8",
         )
 
-        score = (result["completion_rate"], result["mean_return"])
+        score = validation_score(result, endless=self.endless)
         if score > self.best_score:
             self.best_score = score
             self.model.save(self.run_dir / "best_model")
@@ -272,7 +272,7 @@ def build_parser() -> argparse.ArgumentParser:
     random_parser.add_argument(
         "--speed",
         type=float,
-        default=3.0,
+        default=2.0,
         help=(
             "World seconds per real second. Pace and smoothness trade off at a "
             "fixed refresh rate: at 60 fps you get round(6 / speed) frames per "
@@ -400,7 +400,7 @@ def build_parser() -> argparse.ArgumentParser:
     watch_parser.add_argument(
         "--speed",
         type=float,
-        default=3.0,
+        default=2.0,
         help=(
             "World seconds per real second. Pace and smoothness trade off at a "
             "fixed refresh rate: at 60 fps you get round(6 / speed) frames per "
@@ -569,8 +569,13 @@ def _random_evaluation(
     seed: int,
     difficulty_mode: str,
     episode_seconds: float | None = None,
+    endless: bool = False,
 ) -> dict[str, Any]:
-    env = NeonHighwayEnv(difficulty_mode=difficulty_mode, episode_seconds=episode_seconds)
+    env = NeonHighwayEnv(
+        difficulty_mode=difficulty_mode,
+        episode_seconds=episode_seconds,
+        endless=endless,
+    )
     try:
         return evaluate_in_env(
             env,
@@ -580,6 +585,16 @@ def _random_evaluation(
         ).to_dict()
     finally:
         env.close()
+
+
+def validation_score(result: dict[str, Any], *, endless: bool) -> tuple[float, float]:
+    """Rank checkpoints by the outcome the selected mode is meant to optimize."""
+    primary = (
+        float(result["mean_survival_seconds"])
+        if endless
+        else float(result["completion_rate"])
+    )
+    return primary, float(result["mean_return"])
 
 
 def learn_mode(args: argparse.Namespace) -> None:
@@ -613,7 +628,14 @@ def learn_mode(args: argparse.Namespace) -> None:
         "dqn": build_algorithm_kwargs(args.algo, dqn_config),
         "versions": {
             name: importlib.metadata.version(name)
-            for name in ["gymnasium", "numpy", "pygame-ce", "stable-baselines3", "torch"]
+            for name in [
+                "gymnasium",
+                "numpy",
+                "pygame-ce",
+                "sb3-contrib",
+                "stable-baselines3",
+                "torch",
+            ]
         },
     }
     (run_dir / "config.json").write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
@@ -707,14 +729,20 @@ def learn_mode(args: argparse.Namespace) -> None:
         json.dumps(evaluation, indent=2) + "\n", encoding="utf-8"
     )
     print(f"\nSaved game agent to {run_dir.resolve()}")
-    print(
-        f"Random crash rate: {baseline['crash_rate']:.0%}  ->  "
-        f"Agent crash rate: {evaluation['crash_rate']:.0%}"
-    )
-    print(
-        f"Random completion rate: {baseline['completion_rate']:.0%}  ->  "
-        f"Agent completion rate: {evaluation['completion_rate']:.0%}"
-    )
+    if args.endless:
+        print(
+            f"Random mean survival: {format_duration(baseline['mean_survival_seconds'])}  ->  "
+            f"Agent mean survival: {format_duration(evaluation['mean_survival_seconds'])}"
+        )
+    else:
+        print(
+            f"Random crash rate: {baseline['crash_rate']:.0%}  ->  "
+            f"Agent crash rate: {evaluation['crash_rate']:.0%}"
+        )
+        print(
+            f"Random completion rate: {baseline['completion_rate']:.0%}  ->  "
+            f"Agent completion rate: {evaluation['completion_rate']:.0%}"
+        )
 
 
 def _latest_model(model_directory: Path = Path("runs/game")) -> Path:

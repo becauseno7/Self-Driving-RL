@@ -141,30 +141,24 @@ is no route boundary, no lap, and nothing that resets mid-drive. Waves keep
 arriving every `CHALLENGE_INTERVAL_STEPS` and the wave counter accumulates.
 
 The design question is what the episode clock means without a deadline. It
-reports a constant 1.0 -- "plenty of road left" -- which is the state the agent
-occupies for most of training, so a policy trained on fixed 45 s routes drives
-endlessly with no retraining. The waves-cleared fraction reports 0.0 for the
-same reason: "fraction of the route's waves cleared" has no value when waves
-never stop arriving.
+reports a constant 1.0 -- "plenty of road left" -- and the waves-cleared
+fraction reports 0.0 because a fraction has no meaning when waves never stop.
+A fixed-route checkpoint is shape-compatible and can be watched endlessly, but
+it was not optimized for that observation distribution or survival objective.
+Train with `--endless` when endless survival is the target metric.
 
 An earlier attempt banked each finished route as a lap and recycled the clock.
 It worked, but the recycling was an artifact with no counterpart in the task,
-and it cost real performance: repeatedly walking the agent through end-of-route
-states more than halved how long it survived.
-
-| | Mean survival | Longest run |
-|---|---:|---:|
-| Lap-recycling design | ~1m 40s | - |
-| Continuous | 3m 14s - 4m 28s | 19m 02s |
+so continuous driving replaced it. Later smooth-wave and collision changes
+made the old three-to-four-minute benchmark stale; a fresh endless checkpoint
+is needed before publishing a new headline number.
 
 `ENDLESS_STEP_LIMIT` (100,000 steps, ~2.8 simulated hours) still bounds the
 episode so a flawless policy cannot hang a training run.
 
 Completion rate carries no information when every episode ends in a crash, so
-`EvaluationSummary` gained `mean_survival_seconds` and
-`longest_survival_seconds`, and `evaluate --endless` reports those instead. Over
-two 30-episode seed sets the 2M-step model averages 4m 28s and 3m 14s per life,
-clearing 17.9 and 13.0 waves, with a single best run of 19m 02s.
+`EvaluationSummary` and checkpoint selection use survival time in endless mode.
+`evaluate --endless` reports mean and longest survival directly.
 
 ## Presentation: real-time, and nothing pops
 
@@ -180,12 +174,13 @@ physics already kept. At 60 fps that is six frames per step, real time, and
 0.5 pixels of motion per frame.
 
 `--speed` sets world seconds per real second. `watch` and `random` default to
-1.0; `learn` defaults to 12.0, which yields one frame per step at 120 fps and
-so leaves rendered training exactly as fast as it was.
+2.0, which gives three interpolated frames per simulation step at 60 fps;
+`learn` defaults to 12.0 so rendered training remains fast.
 
-**Cars teleported in view.** The visible road runs from 34 m behind the car to
-102 m ahead. Wave staging placed vehicles at -9, -21, +17, +30 and +49 m, so up
-to six cars appeared out of nothing every wave -- every 15 s in endless mode.
+**Cars teleported in view.** The environment now protects a continuity window
+from 34 m behind the car to 102 m ahead, deliberately wider than the camera.
+Wave staging placed vehicles at -9, -21, +17, +30 and +49 m, so up to six cars
+could previously appear out of nothing every wave -- every 15 s in endless mode.
 Recycling could also drop a car into view with a fresh colour and body shape,
 so one car visibly became another.
 
@@ -202,23 +197,27 @@ appearance.
 The opening wave is exempt: nothing has been drawn at step zero, so there is no
 continuity to break and the scenario is set up exactly as before.
 
-**Cars were drawn the wrong size.** The sprite was 78 px long, which at
-6.4 px/m is 12.2 m of road against a `CAR_LENGTH` of 4.6 m -- two and a half
-times too long. Two cars holding a perfectly legal 5 m gap overlapped on screen
-by 46 px, so the game showed a collision the physics had not detected.
-Laterally it was wrong the other way: 45 px is 0.25 lanes against a collision
-width of 0.55, so mid-merge contact could look like a clean pass.
+**Cars and collisions now share one believable footprint.** The first physical
+sprite fix made a 4.6 m x 1.9 m car honest under the old camera, but that camera
+projected it as a 92 x 29 px horizontal bar. V4.1 narrows the road and moves the
+longitudinal scale closer: cars now occupy about 67 x 78 px and use distinct
+coupe, sedan and SUV silhouettes with real windows, mirrors, wheels, lighting
+and body contours.
 
-The camera is squashed 7.6x front-to-back -- a lane is 48.6 px/m across but
-only 6.4 px/m along -- which is what makes 97 m of road fit on screen. An
-honest car under that camera is wide and short: 92 x 29 px. The sprite is now
-derived from `CAR_LENGTH` and `CAR_WIDTH` rather than hard-coded, and
-`LANE_COLLISION_WIDTH` is `CAR_WIDTH / LANE_WIDTH` = 0.514 instead of a
-hand-tuned 0.55. It still clears 0.5, so the merge midpoint stays collidable.
-Sensor ray origins, the ego glow and the impact particles all scale from the
-same footprint. Sprites now touch exactly when the physics reports a crash.
+The renderer still derives those dimensions from `CAR_LENGTH`, `CAR_WIDTH`,
+`LANE_WIDTH` and the camera scale. No decorative bodywork extends beyond the
+physical footprint. `LANE_COLLISION_WIDTH` remains
+`CAR_WIDTH / LANE_WIDTH` = 0.514, so the merge midpoint is collidable and two
+sprites touch when the physics reports contact.
 
-This changed the task. Waves now build over seconds instead of appearing
+Collision detection is now a continuous two-dimensional sweep. It computes the
+time interval of longitudinal overlap and the time interval of lateral overlap,
+then registers a crash only when those intervals intersect. This catches a fast
+diagonal merge or a full pass between 0.1-second steps without combining
+longitudinal and lateral proximity that happened at different times. Exact
+body-boundary contact counts as a crash.
+
+Smooth wave formation changed the task. Waves now build over seconds instead of appearing
 complete, and they no longer reshuffle traffic into known-safe geometry, so
 whatever congestion exists persists. Fixed-route completion is unaffected
 (64% mean over two 100-episode sets, against 65% before), but endless survival
@@ -262,6 +261,10 @@ a range of 55-69% with a mean near 65%, not any single number. Reporting one
 100-episode figure — as the V1-V3 notes did — hides more variance than it shows.
 Waves cleared rose from 2.17 to 2.47 and mean episode length from 327 to 365
 steps on the same seed set.
+
+After the V4.1 simultaneous-axis collision sweep, the same frozen checkpoint
+completed 72%, 65% and 70% across seeds 10,000, 30,000 and 90,000. This is a
+regression check for the physics patch, not a newly trained model result.
 
 These are not directly comparable to V3's 56%, because V4 removed the lane
 change blind spot, widened the collision box past half a lane, and switched to
