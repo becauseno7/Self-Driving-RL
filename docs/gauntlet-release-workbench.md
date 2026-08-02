@@ -173,3 +173,11 @@ human aesthetic judgment. Preserve a rollback commit before each major wave.
 - The two learned artifacts, model card, manifest, training/RLAIF provenance,
   and final evaluation were published. Anonymous downloads reproduced both
   staged artifact sizes and SHA-256 digests exactly.
+- Commit `3ecf8cd` passed hosted CI on Python 3.11 and 3.12 and was frozen as
+  the annotated `v1.0.0` source tag.
+- The public GitHub release was published with both models, the manifest, and
+  raw evaluation attached; anonymous release downloads matched their recorded
+  sizes and digests.
+- A fresh public tag clone installed as `self-driving-rl==1.0.0` and imported
+  from the cloned source. Together with the hosted clean-install matrix, all
+  release gates are complete and this workbench is archived.
