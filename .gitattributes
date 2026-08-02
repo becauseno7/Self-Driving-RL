@@ -1,0 +1,3 @@
+# Exported replay files are checksum-addressed release artifacts. Preserve their
+# exact bytes on every platform instead of applying Git newline conversion.
+web/data/replay-*.json binary
