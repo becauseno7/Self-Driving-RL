@@ -2,7 +2,7 @@
   "schema_version": 1,
   "release_version": "1.0.0",
   "package": "Self-Driving RL layered driver",
-  "publication_status": "pending_user_approval",
+  "publication_status": "published",
   "license_status": "approved",
   "code_license": "MIT",
   "model_license": "MIT",
@@ -11,7 +11,7 @@
   "required_source": {
     "repository": "https://github.com/becauseno7/Self-Driving-RL",
     "tag": "v1.0.0",
-    "publication_status": "pending_user_approval"
+    "publication_status": "published"
   },
   "policy_stack": {
     "simulator_observation_size": 33,

@@ -8,7 +8,7 @@ manage speed, and finish hard routes without sacrificing safety.**
 </p>
 
 <p align="center">
-  <a href="https://becauseno7.github.io/Self-Driving-RL/"><strong>Open the Policy Roadbook browser replay (deployment pending)</strong></a>
+  <a href="https://becauseno7.github.io/Self-Driving-RL/"><strong>Open the Policy Roadbook browser replay</strong></a>
 </p>
 · [Five-minute setup](#five-minute-setup)
 · [Measured results](#measured-v10-result)
@@ -87,9 +87,9 @@ or `python -m pytest` / `python -m ruff check .`.
 
 ## Install the frozen models
 
-The approved model repository is `slicedonions/self-driving-rl-v1`. The URLs
-below will become available after publication is explicitly approved and the
-staged package is uploaded:
+The released model repository is
+[`slicedonions/self-driving-rl-v1`](https://huggingface.co/slicedonions/self-driving-rl-v1).
+Download the two frozen learned layers with:
 
 ```powershell
 $BaseModelUrl = "https://huggingface.co/slicedonions/self-driving-rl-v1/resolve/main/model.zip"
@@ -205,8 +205,7 @@ not a release dependency.
 The browser experience is a deterministic replay exported from a trajectory
 produced by the real frozen Python policy. It is useful for inspecting a
 representative drive without installing Python, but it does **not** run PyTorch
-or make live policy decisions in the visitor's browser. The GitHub Pages URL is
-a placeholder until deployment is approved:
+or make live policy decisions in the visitor's browser. The replay is live at:
 [becauseno7.github.io/Self-Driving-RL](https://becauseno7.github.io/Self-Driving-RL/).
 
 To preview the exact static site locally before publication:

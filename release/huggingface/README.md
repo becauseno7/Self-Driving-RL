@@ -54,9 +54,8 @@ candidates were rejected by the matched-seed promotion gate and are not part of
 the recommended driver.
 
 > **License:** the code, documentation, `model.zip`, and `override_model.pt` are
-> released under the MIT License; see `LICENSE`. The target model repository is
-> `slicedonions/self-driving-rl-v1`. Publication is still pending explicit user
-> approval, so the repository and download URLs may not exist yet.
+> released under the MIT License; see `LICENSE`. This is the official model
+> package for `slicedonions/self-driving-rl-v1`.
 
 ## Model details
 
@@ -104,8 +103,7 @@ provenance is in `config/v6-override-provenance.json`.
 
 ## Install
 
-The package has not been uploaded. After publication is approved and the model
-repository exists, install it with:
+Install the public package with:
 
 ```bash
 git clone https://github.com/becauseno7/Self-Driving-RL.git
@@ -221,8 +219,7 @@ limit deployment-time interventions.
 - DAgger experiments are documented, but every candidate remained `HOLD`; none
   is silently bundled here.
 - Exact reproducibility still depends on the pinned Python stack, platform
-  numerics, and repository source. The required source tag is `v1.0.0`; it will
-  remain unavailable until publication is approved.
+  numerics, and repository source. Use the matching `v1.0.0` source tag.
 
 See `artifact-manifest.json` for the machine-readable file inventory and the
 project README for the architecture and learning guides.

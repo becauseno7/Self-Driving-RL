@@ -161,3 +161,15 @@ human aesthetic judgment. Preserve a rollback commit before each major wave.
   passing tests and verify MIT coverage, artifact hashes, and URL resolution.
 - External push, tag, Pages deployment, Hugging Face creation/upload, and Reddit
   posting still require explicit publication approval.
+
+### Publication approval and hosted verification
+
+- The user explicitly approved publication on 2026-08-02.
+- `main` was pushed to GitHub and the Python 3.11/3.12 CI matrix passed.
+- GitHub Pages deployed successfully and the public Policy Roadbook replay and
+  replay manifest returned successfully from the production URL.
+- The public Hugging Face repository was created as
+  `slicedonions/self-driving-rl-v1` with the MIT license.
+- The two learned artifacts, model card, manifest, training/RLAIF provenance,
+  and final evaluation were published. Anonymous downloads reproduced both
+  staged artifact sizes and SHA-256 digests exactly.

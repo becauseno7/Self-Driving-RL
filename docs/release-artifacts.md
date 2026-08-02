@@ -2,8 +2,9 @@
 
 Self-Driving RL v1.0 uses two learned artifacts plus deterministic controller
 code. The code, documentation, and learned artifacts are approved under the MIT
-License. The artifacts are staged under `release/huggingface/` for inspection,
-but are not public downloads until publication is explicitly approved.
+License. The canonical public copies are hosted at
+`slicedonions/self-driving-rl-v1`; identical release inputs are retained under
+`release/huggingface/` for inspection and verification.
 
 ## Frozen stack
 
@@ -69,6 +70,5 @@ simulator and seed set only.
 - GitHub release: `https://github.com/becauseno7/Self-Driving-RL/releases/tag/v1.0.0`
 - Browser replay: `https://becauseno7.github.io/Self-Driving-RL/`
 
-These targets remain unpublished until the user approves the external release
-actions. The authoritative machine-readable inventory is
+The authoritative machine-readable inventory is
 `release/huggingface/artifact-manifest.json`.

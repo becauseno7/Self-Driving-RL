@@ -39,10 +39,11 @@ def test_model_card_and_manifest_have_approved_release_metadata() -> None:
 
     assert "license: mit" in model_card
     assert HF_REPOSITORY in model_card
-    assert manifest["publication_status"] == "pending_user_approval"
+    assert manifest["publication_status"] == "published"
     assert manifest["license_status"] == "approved"
     assert manifest["code_license"] == manifest["model_license"] == "MIT"
     assert manifest["hugging_face_repository"] == HF_REPOSITORY
+    assert manifest["required_source"]["publication_status"] == "published"
 
     for artifact in manifest["artifacts"]:
         path = HF_DIR / artifact["path"]
