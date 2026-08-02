@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f2f0ea" />
+    <meta
+      name="description"
+      content="Watch the frozen Self-Driving RL v1.0 policy make genuine live decisions in dynamic simulator traffic."
+    />
+    <title>Self-Driving RL Live</title>
+    <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script src="/static/app.js" defer></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="wordmark" href="/" aria-label="Self-Driving RL Live home">
+        <span class="wordmark-mark" aria-hidden="true"><i></i><i></i></span>
+        <span>Self-Driving RL</span>
+      </a>
+      <nav aria-label="Project links">
+        <a href="https://huggingface.co/slicedonions/self-driving-rl-v1" target="_blank" rel="noreferrer">Model</a>
+        <a href="https://github.com/becauseno7/Self-Driving-RL" target="_blank" rel="noreferrer">Source</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="intro" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow"><span></span> Genuine live policy session</p>
+          <h1 id="page-title">Watch the driver decide.</h1>
+        </div>
+        <p>
+          This is not a recording. A fresh Python simulator and the frozen v1.0
+          QR-DQN, RLAIF residual, and safety controller are running for you now.
+        </p>
+      </section>
+
+      <section class="experience" aria-label="Live self-driving simulation">
+        <div class="road-column">
+          <div class="canvas-shell" id="canvas-shell">
+            <canvas id="road" role="img" aria-label="Connecting to the live driving simulation"></canvas>
+            <div class="canvas-topline" aria-hidden="true">
+              <span id="run-state" class="connecting"><i></i> Connecting</span>
+              <span id="canvas-seed">Preparing traffic</span>
+            </div>
+            <div class="load-state" id="load-state">
+              <div class="loader" aria-hidden="true"></div>
+              <strong>Waking the live driver</strong>
+              <small>Loading the frozen policy on CPU…</small>
+            </div>
+            <div class="outcome-toast" id="outcome-toast" hidden role="status"></div>
+          </div>
+
+          <div class="primary-controls">
+            <button class="primary-button" id="play" type="button" disabled>
+              <svg class="pause-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M7 5h3v14H7zm7 0h3v14h-3z" />
+              </svg>
+              <svg class="play-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m8 5 11 7-11 7z" />
+              </svg>
+              <span id="play-label">Pause</span>
+            </button>
+
+            <button class="quiet-button" id="new-seed" type="button" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 8h4l2-3h4l2 3h4v11H4z" />
+                <circle cx="12" cy="13" r="3" />
+              </svg>
+              New traffic
+            </button>
+
+            <button class="quiet-button" id="restart" type="button" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5.5 7.5A8 8 0 1 1 4 13M5.5 7.5V3m0 4.5H10" />
+              </svg>
+              Restart seed
+            </button>
+
+            <div class="run-clock" aria-label="Simulated elapsed time">
+              <span>Elapsed</span>
+              <strong id="elapsed">00:00.0</strong>
+            </div>
+          </div>
+
+          <div class="scenario-controls">
+            <label>
+              <span>Difficulty</span>
+              <select id="difficulty" disabled>
+                <option value="hard" selected>Hard</option>
+                <option value="standard">Standard</option>
+              </select>
+            </label>
+            <label>
+              <span>Simulation speed</span>
+              <select id="rate" disabled>
+                <option value="0.5">0.5×</option>
+                <option value="1" selected>1×</option>
+                <option value="2">2×</option>
+              </select>
+            </label>
+            <label class="switch-control">
+              <input id="dynamic" type="checkbox" checked disabled />
+              <span class="switch" aria-hidden="true"></span>
+              <span>Dynamic traffic</span>
+            </label>
+            <button class="quiet-button toggle-button" id="sensors" type="button" aria-pressed="false" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 12h2m12 0h2M6.3 6.3l1.4 1.4m8.6 8.6 1.4 1.4m0-11.4-1.4 1.4M7.7 16.3l-1.4 1.4M12 4v2m0 12v2" />
+                <circle cx="12" cy="12" r="3.5" />
+              </svg>
+              Sensor view
+            </button>
+          </div>
+        </div>
+
+        <aside class="telemetry" aria-label="Live drive telemetry">
+          <div class="telemetry-heading">
+            <div>
+              <p class="section-kicker">Current intent</p>
+              <h2 id="intent">Preparing driver</h2>
+            </div>
+            <span class="intent-mark" id="intent-mark" aria-hidden="true">—</span>
+          </div>
+          <p class="intent-reason" id="intent-reason">Waiting for the first policy decision.</p>
+
+          <div class="primary-stat">
+            <span class="stat-label">Vehicle speed</span>
+            <p><strong id="speed-value">—</strong><span>km/h</span></p>
+            <div class="speed-track" aria-hidden="true"><i id="speed-fill"></i><b id="target-pin"></b></div>
+            <div class="speed-caption"><span>0</span><span id="target-speed">Target —</span><span>122</span></div>
+          </div>
+
+          <dl class="metric-grid">
+            <div><dt>Front TTC</dt><dd id="ttc">—</dd></div>
+            <div><dt>Rear TTC</dt><dd id="rear-ttc">—</dd></div>
+            <div><dt>Net passes</dt><dd id="passes">—</dd></div>
+            <div><dt>Distance</dt><dd id="distance">—</dd></div>
+            <div><dt>Lane changes</dt><dd id="lane-changes">—</dd></div>
+            <div><dt>Inference</dt><dd id="latency">—</dd></div>
+          </dl>
+
+          <div class="decision-block">
+            <div><span>Road phase</span><strong id="challenge">—</strong></div>
+            <p id="action">Control: —</p>
+            <p id="layers">Learned layer: —</p>
+            <p id="braking">Speed controller: —</p>
+          </div>
+
+          <div class="session-block">
+            <p class="section-kicker">Live session</p>
+            <div><span>Seed</span><strong id="seed-value">—</strong></div>
+            <div><span>Episode</span><strong id="episode-value">—</strong></div>
+            <div><span>Traffic events</span><strong id="traffic-events">—</strong></div>
+          </div>
+        </aside>
+      </section>
+
+      <section class="truth" aria-labelledby="truth-title">
+        <div>
+          <p class="section-kicker">What is happening</p>
+          <h2 id="truth-title">One real policy decision every 100 ms.</h2>
+        </div>
+        <p>
+          The server runs <code>NeonHighwayEnv-v5</code>, forms the exact 33-value
+          observation, and asks the frozen layered policy for one of nine joint
+          steering/pedal actions. The browser only draws the returned state.
+        </p>
+        <dl>
+          <div><dt>Policy</dt><dd>V5 QR-DQN + V6 RLAIF + V7/V8 controller</dd></div>
+          <div><dt>Mode</dt><dd>Endless; automatically restarts after a crash</dd></div>
+          <div><dt>Scope</dt><dd>Custom simulator only—not real-road autonomy</dd></div>
+        </dl>
+      </section>
+    </main>
+
+    <footer>
+      <span>Self-Driving RL v1.0 · MIT licensed</span>
+      <span id="footer-state">Live inference service · connecting</span>
+    </footer>
+  </body>
+</html>
