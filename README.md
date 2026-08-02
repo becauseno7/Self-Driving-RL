@@ -8,8 +8,15 @@ manage speed, and finish hard routes without sacrificing safety.**
 </p>
 
 <p align="center">
-  <a href="https://becauseno7.github.io/Self-Driving-RL/"><strong>Open the Policy Roadbook browser replay</strong></a>
+  <a href="https://huggingface.co/spaces/slicedonions/self-driving-rl-live"><strong>Watch the live RL driver</strong></a>
+  &nbsp;&middot;&nbsp;
+  <a href="https://becauseno7.github.io/Self-Driving-RL/"><strong>Open the Policy Roadbook replay</strong></a>
 </p>
+
+The Hugging Face Space is a genuine interactive session, not a recording: each
+viewer runs the frozen learned policy and original simulator locally in their
+browser through ONNX Runtime Web and Pyodide.
+
 · [Five-minute setup](#five-minute-setup)
 · [Measured results](#measured-v10-result)
 · [How it works](#recommended-v10-driver)

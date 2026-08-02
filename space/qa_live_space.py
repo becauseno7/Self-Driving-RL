@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from playwright.sync_api import Browser, Page, sync_playwright
 
 ROOT = Path(__file__).parents[1]
 OUTPUT = ROOT / "runs"
-URL = "http://127.0.0.1:7860"
+URL = os.getenv(
+    "SDR_SPACE_URL", "http://127.0.0.1:8001/space/static/index.html"
+)
 
 
 def wait_for_live(page: Page) -> None:
     page.goto(URL, wait_until="networkidle")
-    page.locator("#load-state").wait_for(state="hidden", timeout=20_000)
+    page.locator("#load-state").wait_for(state="hidden", timeout=60_000)
     page.locator("#play").wait_for(state="visible")
     page.wait_for_function(
         "document.querySelector('#speed-value').textContent.trim() !== '—'"

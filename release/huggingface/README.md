@@ -40,12 +40,19 @@ model-index:
 
 # Self-Driving RL v1.0
 
+**[Watch the frozen driver make live decisions in the interactive Hugging Face
+Space.](https://huggingface.co/spaces/slicedonions/self-driving-rl-live)** Each
+viewer gets an independent hard-mode, dynamic-traffic session running locally
+in their browser; it is not a prerecorded replay.
+
 This model package contains the two learned layers of the recommended
 Self-Driving RL driver:
 
 - `model.zip`: the validation-selected checkpoint from a 2.5M-step V5 QR-DQN
   run;
 - `override_model.pt`: the calibrated V6 confidence-gated preference residual.
+- `v5-qrdqn.onnx` and `v6-rlaif-override.onnx`: parity-checked browser exports
+  used by the public live Space.
 
 The complete driver also requires the v1.0 repository code. Its V7/V8
 `LongitudinalIntentPolicy` adds deterministic persistent speed intent, smooth
@@ -63,6 +70,7 @@ the recommended driver.
 |---|---|---|
 | V5 | Frozen QR-DQN base policy | Stable-Baselines3 / `sb3-contrib` ZIP |
 | V6 | Sparse RLAIF calm/pass corrections | PyTorch weights-only checkpoint |
+| Browser | V5/V6 learned layers | ONNX opset 18 |
 | V7/V8 | Persistent intent, braking, and safety controller | Repository Python code |
 
 - **Simulator observation:** 33 normalized float values (nine ego/route values

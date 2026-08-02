@@ -9,9 +9,11 @@
       content="Watch the frozen Self-Driving RL v1.0 policy make genuine live decisions in dynamic simulator traffic."
     />
     <title>Self-Driving RL Live</title>
-    <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="/static/styles.css" />
-    <script src="/static/app.js" defer></script>
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="https://cdn.jsdelivr.net/pyodide/v314.0.3/full/pyodide.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/ort.min.js" defer></script>
+    <script src="./app.js" defer></script>
   </head>
   <body>
     <header class="site-header">
@@ -32,8 +34,8 @@
           <h1 id="page-title">Watch the driver decide.</h1>
         </div>
         <p>
-          This is not a recording. A fresh Python simulator and the frozen v1.0
-          QR-DQN, RLAIF residual, and safety controller are running for you now.
+          This is not a recording. Your browser is running a fresh Python
+          simulator plus the frozen v1.0 QR-DQN, RLAIF residual, and controller.
         </p>
       </section>
 
@@ -48,7 +50,7 @@
             <div class="load-state" id="load-state">
               <div class="loader" aria-hidden="true"></div>
               <strong>Waking the live driver</strong>
-              <small>Loading the frozen policy on CPU…</small>
+              <small>Loading Python and the parity-checked ONNX policy…</small>
             </div>
             <div class="outcome-toast" id="outcome-toast" hidden role="status"></div>
           </div>
@@ -164,9 +166,9 @@
           <h2 id="truth-title">One real policy decision every 100 ms.</h2>
         </div>
         <p>
-          The server runs <code>NeonHighwayEnv-v5</code>, forms the exact 33-value
-          observation, and asks the frozen layered policy for one of nine joint
-          steering/pedal actions. The browser only draws the returned state.
+          Your browser runs <code>NeonHighwayEnv-v5</code>, forms the exact
+          33-value observation, and asks the frozen layered policy for one of
+          nine joint steering/pedal actions. No driving state leaves the device.
         </p>
         <dl>
           <div><dt>Policy</dt><dd>V5 QR-DQN + V6 RLAIF + V7/V8 controller</dd></div>
@@ -178,7 +180,7 @@
 
     <footer>
       <span>Self-Driving RL v1.0 · MIT licensed</span>
-      <span id="footer-state">Live inference service · connecting</span>
+      <span id="footer-state">Local browser inference · initializing</span>
     </footer>
   </body>
 </html>

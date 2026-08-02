@@ -50,10 +50,17 @@ const controls = [
   ui.sensors,
 ];
 const state = {
-  socket: null,
-  reconnectTimer: null,
-  reconnectAttempt: 0,
-  meta: null,
+  pyodide: null,
+  baseSession: null,
+  overrideSession: null,
+  ready: false,
+  stepping: false,
+  pendingReset: null,
+  restartAt: null,
+  meta: {
+    decision_hz: 10,
+    road: { lanes: 4, lane_width_m: 3.7, car_length_m: 4.6, car_width_m: 1.9 },
+  },
   current: null,
   previous: null,
   receivedAt: 0,
@@ -67,8 +74,27 @@ const state = {
   },
   episode: 0,
   sensors: false,
-  connected: false,
   outcomeTimer: null,
+};
+
+const PYODIDE_VERSION = "314.0.3";
+const ONNX_VERSION = "1.27.0";
+const PYODIDE_BASE = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
+const ONNX_BASE = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ONNX_VERSION}/dist/`;
+const SOURCE_BASE = "https://raw.githubusercontent.com/becauseno7/Self-Driving-RL/v1.0.0/src/self_driving_rl";
+const LOCAL_MODELS = ["127.0.0.1", "localhost"].includes(window.location.hostname);
+const MODEL_BASE = LOCAL_MODELS
+  ? "/artifacts/browser-policy-v1"
+  : "https://huggingface.co/slicedonions/self-driving-rl-v1/resolve/main";
+const MODEL_FILES = {
+  base: {
+    url: `${MODEL_BASE}/v5-qrdqn.onnx`,
+    sha256: "970C9A7F725E2921228EEA22977B358C8BC242D58815DD933945CEE71B51C26E",
+  },
+  override: {
+    url: `${MODEL_BASE}/v6-rlaif-override.onnx`,
+    sha256: "D699D6845AEC7A642FBEBC81701580DCEEC3AE7A18DAB81A1B3A1A64ED97BA97",
+  },
 };
 
 const carColors = ["#9b5d55", "#557486", "#b19a61", "#7b746d", "#607b68", "#8c6c85"];
@@ -118,7 +144,7 @@ function setControlsEnabled(enabled) {
 function setConnectionState(kind, copy) {
   ui.runState.className = kind;
   ui.runState.innerHTML = `<i></i> ${copy}`;
-  ui.footerState.textContent = `Live inference service · ${copy.toLowerCase()}`;
+  ui.footerState.textContent = `Local browser inference · ${copy.toLowerCase()}`;
 }
 
 function showLoading(title, copy, spinning = true) {
@@ -146,7 +172,7 @@ function updatePauseUi() {
   ui.play.classList.toggle("is-paused", paused);
   ui.playLabel.textContent = paused ? "Resume" : "Pause";
   ui.play.setAttribute("aria-label", paused ? "Resume live simulation" : "Pause live simulation");
-  if (state.connected) setConnectionState(paused ? "paused" : "live", paused ? "Simulation paused" : "Policy deciding live");
+  if (state.ready) setConnectionState(paused ? "paused" : "live", paused ? "Simulation paused" : "Policy deciding live");
 }
 
 function syncSettings(settings) {
@@ -161,9 +187,12 @@ function syncSettings(settings) {
   updatePauseUi();
 }
 
-function sendControl(command, payload = {}) {
-  if (!state.socket || state.socket.readyState !== WebSocket.OPEN) return;
-  state.socket.send(JSON.stringify({ type: "control", command, ...payload }));
+function requestReset(seed) {
+  state.pendingReset = {
+    seed,
+    difficulty: ui.difficulty.value,
+    dynamic_traffic: ui.dynamic.checked,
+  };
 }
 
 function roundedRect(context, x, y, width, height, radius) {
@@ -393,129 +422,237 @@ function animationFrame(now) {
   requestAnimationFrame(animationFrame);
 }
 
-function handleMessage(message) {
-  if (message.type === "loading") {
-    showLoading("Waking the live driver", message.message || "Loading the frozen policy on CPU…");
-    setConnectionState("connecting", "Loading policy");
-    return;
+function sleep(milliseconds) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+function argmax(values) {
+  let bestIndex = 0;
+  for (let index = 1; index < values.length; index += 1) {
+    if (values[index] > values[bestIndex]) bestIndex = index;
   }
-  if (message.type === "hello") {
-    state.meta = message;
-    syncSettings(message.settings);
-    return;
+  return bestIndex;
+}
+
+function softmax(values) {
+  const maximum = Math.max(...values);
+  const exponentials = Array.from(values, (value) => Math.exp(value - maximum));
+  const total = exponentials.reduce((sum, value) => sum + value, 0);
+  return exponentials.map((value) => value / total);
+}
+
+async function sha256Hex(buffer) {
+  const hash = await crypto.subtle.digest("SHA-256", buffer);
+  return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0"))
+    .join("")
+    .toUpperCase();
+}
+
+async function verifiedModel({ url, sha256 }, label) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`${label} download failed (${response.status})`);
+  const buffer = await response.arrayBuffer();
+  const actualHash = await sha256Hex(buffer);
+  if (actualHash !== sha256) throw new Error(`${label} failed its integrity check`);
+  return buffer;
+}
+
+async function loadBrowserModels() {
+  window.ort.env.wasm.wasmPaths = ONNX_BASE;
+  window.ort.env.wasm.numThreads = 1;
+  const [baseBytes, overrideBytes] = await Promise.all([
+    verifiedModel(MODEL_FILES.base, "V5 policy"),
+    verifiedModel(MODEL_FILES.override, "V6 preference layer"),
+  ]);
+  const sessionOptions = {
+    executionProviders: ["wasm"],
+    graphOptimizationLevel: "all",
+  };
+  [state.baseSession, state.overrideSession] = await Promise.all([
+    window.ort.InferenceSession.create(baseBytes, sessionOptions),
+    window.ort.InferenceSession.create(overrideBytes, sessionOptions),
+  ]);
+}
+
+async function loadPythonRuntime() {
+  state.pyodide = await window.loadPyodide({ indexURL: PYODIDE_BASE });
+  await state.pyodide.loadPackage("numpy");
+  const sourceUrls = [
+    `${SOURCE_BASE}/game_env.py`,
+    `${SOURCE_BASE}/longitudinal.py`,
+    "./python/browser_runtime.py",
+  ];
+  const responses = await Promise.all(sourceUrls.map((url) => fetch(url)));
+  const failedIndex = responses.findIndex((response) => !response.ok);
+  if (failedIndex >= 0) {
+    throw new Error(`Simulator source download failed (${responses[failedIndex].status})`);
   }
-  if (message.type === "status") {
-    syncSettings(message.settings);
-    return;
-  }
-  if (message.type === "state") {
-    const episodeChanged = state.episode !== 0 && message.episode !== state.episode;
-    state.previous = episodeChanged ? null : state.current;
-    state.current = message.frame;
-    state.receivedAt = performance.now();
-    state.episode = message.episode;
-    ui.episodeValue.textContent = String(message.episode);
-    syncSettings(message.settings);
-    state.connected = true;
-    state.reconnectAttempt = 0;
-    setControlsEnabled(true);
-    hideLoading();
-    updatePauseUi();
-    return;
-  }
-  if (message.type === "outcome") {
-    const detail = message.outcome === "crashed"
-      ? `Crash after ${message.elapsed_seconds.toFixed(1)} s · restarting on seed ${Number(message.next_seed).toLocaleString()}`
-      : `Run ended after ${message.elapsed_seconds.toFixed(1)} s · restarting`;
-    showOutcome(detail);
-    return;
-  }
-  if (message.type === "error") {
-    showLoading("Live driver unavailable", message.message || "Please try again shortly.", false);
-    setConnectionState("error", message.code === "busy" ? "Demo busy" : "Driver stopped");
-    setControlsEnabled(false);
+  const [gameEnvSource, longitudinalSource, runtimeSource] = await Promise.all(
+    responses.map((response) => response.text()),
+  );
+  state.pyodide.globals.set("game_env_source", gameEnvSource);
+  state.pyodide.globals.set("longitudinal_source", longitudinalSource);
+  await state.pyodide.runPythonAsync(runtimeSource);
+}
+
+function randomSeed() {
+  const values = new Uint32Array(1);
+  crypto.getRandomValues(values);
+  return 100000 + (values[0] % 900000);
+}
+
+function applyRuntimeState(message) {
+  const episodeChanged = state.episode !== 0 && message.episode !== state.episode;
+  state.previous = episodeChanged ? null : state.current;
+  state.current = message.frame;
+  state.receivedAt = performance.now();
+  state.episode = message.episode;
+  state.settings.seed = message.seed;
+  ui.episodeValue.textContent = String(message.episode);
+  syncSettings(state.settings);
+  setControlsEnabled(true);
+  hideLoading();
+  updatePauseUi();
+  if (message.done) {
+    const nextSeed = Number(message.seed) + 1;
+    const elapsed = message.frame.t.elapsed_seconds.toFixed(1);
+    const label = message.outcome === "crashed" ? "Crash" : "Run ended";
+    showOutcome(`${label} after ${elapsed} s · restarting on seed ${nextSeed.toLocaleString()}`);
+    state.restartAt = performance.now() + 1500;
   }
 }
 
-function connect() {
-  window.clearTimeout(state.reconnectTimer);
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const socket = new WebSocket(`${protocol}//${window.location.host}/ws`);
-  state.socket = socket;
-  state.connected = false;
-  setControlsEnabled(false);
-  setConnectionState("connecting", "Connecting");
-  showLoading("Waking the live driver", "Connecting to a fresh policy session…");
+function resetSimulation({ seed, difficulty, dynamic_traffic: dynamicTraffic }) {
+  const selectedSeed = seed == null ? randomSeed() : Number(seed);
+  state.settings = {
+    ...state.settings,
+    seed: selectedSeed,
+    difficulty,
+    dynamic_traffic: Boolean(dynamicTraffic),
+  };
+  state.pyodide.globals.set("reset_seed", selectedSeed);
+  state.pyodide.globals.set("reset_difficulty", difficulty);
+  state.pyodide.globals.set("reset_dynamic", Boolean(dynamicTraffic));
+  const result = state.pyodide.runPython(
+    "runtime.reset(int(reset_seed), str(reset_difficulty), bool(reset_dynamic))",
+  );
+  state.restartAt = null;
+  applyRuntimeState(JSON.parse(result));
+}
 
-  socket.addEventListener("open", () => {
-    setConnectionState("connecting", "Loading policy");
+async function inferenceStep() {
+  const prepared = JSON.parse(state.pyodide.runPython("runtime.prepare_json()"));
+  const startedAt = performance.now();
+  const baseInput = new window.ort.Tensor(
+    "float32",
+    Float32Array.from(prepared.observation),
+    [1, 33],
+  );
+  const baseOutputs = await state.baseSession.run({ observation: baseInput });
+  const baseAction = argmax(baseOutputs.q_values.data);
+  const overrideInput = new window.ort.Tensor(
+    "float32",
+    Float32Array.from(prepared.override_observation),
+    [1, 35],
+  );
+  const baseActionInput = new window.ort.Tensor(
+    "int64",
+    BigInt64Array.from([BigInt(baseAction)]),
+    [1],
+  );
+  const overrideOutputs = await state.overrideSession.run({
+    observation: overrideInput,
+    base_action: baseActionInput,
   });
-  socket.addEventListener("message", (event) => {
-    try {
-      handleMessage(JSON.parse(event.data));
-    } catch (error) {
-      showLoading("Unexpected live data", error.message, false);
+  const probabilities = softmax(overrideOutputs.kind_logits.data);
+  const proposedAction = argmax(overrideOutputs.action_logits.data);
+  const inferenceMs = performance.now() - startedAt;
+  state.pyodide.globals.set("step_base_action", baseAction);
+  state.pyodide.globals.set("step_probabilities_json", JSON.stringify(probabilities));
+  state.pyodide.globals.set("step_proposed_action", proposedAction);
+  state.pyodide.globals.set("step_inference_ms", inferenceMs);
+  const result = state.pyodide.runPython(
+    "runtime.step(int(step_base_action), json.loads(step_probabilities_json), " +
+      "int(step_proposed_action), float(step_inference_ms))",
+  );
+  applyRuntimeState(JSON.parse(result));
+}
+
+async function policyLoop() {
+  while (state.ready) {
+    if (state.pendingReset) {
+      const reset = state.pendingReset;
+      state.pendingReset = null;
+      resetSimulation(reset);
+      continue;
     }
-  });
-  socket.addEventListener("close", () => {
-    if (state.socket !== socket) return;
-    state.connected = false;
+    if (state.restartAt && performance.now() >= state.restartAt) {
+      resetSimulation({
+        seed: Number(state.settings.seed) + 1,
+        difficulty: state.settings.difficulty,
+        dynamic_traffic: state.settings.dynamic_traffic,
+      });
+      continue;
+    }
+    if (state.settings.paused || state.restartAt) {
+      await sleep(40);
+      continue;
+    }
+    const startedAt = performance.now();
+    await inferenceStep();
+    const interval = 1000 / ((state.meta?.decision_hz || 10) * state.settings.rate);
+    await sleep(Math.max(0, interval - (performance.now() - startedAt)));
+  }
+}
+
+async function boot() {
+  setControlsEnabled(false);
+  setConnectionState("connecting", "Loading policy");
+  showLoading("Loading the live driver", "Starting Python and verifying the learned policy…");
+  try {
+    await Promise.all([loadPythonRuntime(), loadBrowserModels()]);
+    resetSimulation({
+      seed: randomSeed(),
+      difficulty: state.settings.difficulty,
+      dynamic_traffic: state.settings.dynamic_traffic,
+    });
+    state.ready = true;
+    updatePauseUi();
+    void policyLoop();
+  } catch (error) {
+    console.error(error);
+    showLoading("Live driver unavailable", error.message || "Initialization failed.", false);
+    setConnectionState("error", "Driver stopped");
     setControlsEnabled(false);
-    setConnectionState("connecting", "Reconnecting");
-    showLoading("Reconnecting", "The live session ended. Starting another…");
-    const delay = Math.min(10000, 900 * 2 ** state.reconnectAttempt);
-    state.reconnectAttempt += 1;
-    state.reconnectTimer = window.setTimeout(connect, delay);
-  });
-  socket.addEventListener("error", () => {
-    setConnectionState("error", "Connection interrupted");
-  });
+  }
 }
 
 ui.play.addEventListener("click", () => {
   state.settings.paused = !state.settings.paused;
-  sendControl(state.settings.paused ? "pause" : "resume");
   updatePauseUi();
 });
 
 ui.newSeed.addEventListener("click", () => {
-  sendControl("reset", {
-    seed: null,
-    difficulty: ui.difficulty.value,
-    dynamic_traffic: ui.dynamic.checked,
-  });
+  requestReset(null);
   showOutcome("Generating a fresh deterministic traffic seed…");
 });
 
 ui.restart.addEventListener("click", () => {
-  sendControl("reset", {
-    seed: state.settings.seed,
-    difficulty: ui.difficulty.value,
-    dynamic_traffic: ui.dynamic.checked,
-  });
+  requestReset(state.settings.seed);
   showOutcome(`Restarting seed ${Number(state.settings.seed).toLocaleString()}…`);
 });
 
 ui.difficulty.addEventListener("change", () => {
-  sendControl("reset", {
-    seed: state.settings.seed,
-    difficulty: ui.difficulty.value,
-    dynamic_traffic: ui.dynamic.checked,
-  });
+  requestReset(state.settings.seed);
 });
 
 ui.dynamic.addEventListener("change", () => {
-  sendControl("reset", {
-    seed: state.settings.seed,
-    difficulty: ui.difficulty.value,
-    dynamic_traffic: ui.dynamic.checked,
-  });
+  requestReset(state.settings.seed);
 });
 
 ui.rate.addEventListener("change", () => {
   state.settings.rate = Number(ui.rate.value);
   state.expectedInterval = 1000 / ((state.meta?.decision_hz || 10) * state.settings.rate);
-  sendControl("rate", { value: state.settings.rate });
 });
 
 ui.sensors.addEventListener("click", () => {
@@ -530,11 +667,6 @@ window.addEventListener("keydown", (event) => {
   }
 });
 
-window.addEventListener("beforeunload", () => {
-  window.clearTimeout(state.reconnectTimer);
-  state.socket?.close();
-});
-
 new ResizeObserver(() => render(performance.now())).observe(ui.shell);
 requestAnimationFrame(animationFrame);
-connect();
+void boot();
