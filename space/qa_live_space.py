@@ -61,6 +61,20 @@ def desktop_qa(browser: Browser) -> list[str]:
     )
     page.wait_for_timeout(800)
 
+    crash_episode = page.locator("#episode-value").inner_text()
+    page.evaluate("window.__SDR_TEST__.forceCrash()")
+    page.locator('#outcome-toast[data-kind="crash"]').wait_for(
+        state="visible", timeout=3_000
+    )
+    assert "impact detected" in page.locator("#outcome-toast").inner_text().casefold()
+    assert "impact detected" in page.locator("#run-state").inner_text().casefold()
+    page.wait_for_function(
+        "episode => document.querySelector('#episode-value').textContent.trim() !== episode",
+        arg=crash_episode,
+        timeout=5_000,
+    )
+    assert "policy deciding live" in page.locator("#run-state").inner_text().casefold()
+
     page.screenshot(path=OUTPUT / "space-qa-desktop.png", full_page=True)
     assert not errors, errors
     page.close()

@@ -158,13 +158,15 @@ function hideLoading() {
   ui.load.hidden = true;
 }
 
-function showOutcome(message) {
+function showOutcome(message, kind = "info") {
   window.clearTimeout(state.outcomeTimer);
   ui.outcome.textContent = message;
+  ui.outcome.dataset.kind = kind;
+  ui.outcome.setAttribute("role", kind === "crash" ? "alert" : "status");
   ui.outcome.hidden = false;
   state.outcomeTimer = window.setTimeout(() => {
     ui.outcome.hidden = true;
-  }, 5200);
+  }, kind === "crash" ? 6800 : 5200);
 }
 
 function updatePauseUi() {
@@ -262,15 +264,22 @@ function interpolateFrame(previous, current, mix) {
   return { e: ego, c: cars, s: current.s, t: current.t };
 }
 
+function projectLongitudinalDistance(distance, carHeight, carLength) {
+  const direction = Math.sign(distance);
+  const magnitude = Math.abs(distance);
+  const contactScale = carHeight / Math.asinh(1);
+  return direction * Math.asinh(magnitude / carLength) * contactScale;
+}
+
 function drawSensors(layout, data) {
-  const { roadLeft, laneWidth, egoY, metresToPixels } = layout;
+  const { roadLeft, laneWidth, egoY, projectDistance } = layout;
   ctx.save();
   ctx.setLineDash([5, 6]);
   ctx.lineWidth = 1.2;
   data.s.forEach((sensor, lane) => {
     const x = roadLeft + laneWidth * (lane + 0.5);
-    const ahead = Math.min(sensor[0], 70) * metresToPixels;
-    const behind = Math.min(sensor[2], 42) * metresToPixels;
+    const ahead = projectDistance(Math.min(sensor[0], 70));
+    const behind = projectDistance(Math.min(sensor[2], 42));
     ctx.strokeStyle = sensor[0] < 18 ? "rgba(224, 155, 91, .9)" : "rgba(175, 207, 195, .62)";
     ctx.beginPath();
     ctx.moveTo(x, egoY - 5);
@@ -329,12 +338,18 @@ function drawRoad(data) {
     }
   }
 
-  if (state.sensors) drawSensors({ roadLeft, laneWidth, egoY, metresToPixels }, data);
-
   const carWidth = Math.min(laneWidth * 0.4, 45);
   const carHeight = carWidth * 2.22;
+  const carLength = state.meta?.road?.car_length_m || 4.6;
+  const projectDistance = (distance) => (
+    projectLongitudinalDistance(distance, carHeight, carLength)
+  );
+  if (state.sensors) {
+    drawSensors({ roadLeft, laneWidth, egoY, projectDistance }, data);
+  }
+
   data.c
-    .map((car) => ({ car, y: egoY - car[1] * metresToPixels }))
+    .map((car) => ({ car, y: egoY - projectDistance(car[1]) }))
     .filter(({ y }) => y > -carHeight && y < height + carHeight)
     .sort((a, b) => a.y - b.y)
     .forEach(({ car, y }) => {
@@ -516,9 +531,20 @@ function applyRuntimeState(message) {
   if (message.done) {
     const nextSeed = Number(message.seed) + 1;
     const elapsed = message.frame.t.elapsed_seconds.toFixed(1);
-    const label = message.outcome === "crashed" ? "Crash" : "Run ended";
-    showOutcome(`${label} after ${elapsed} s · restarting on seed ${nextSeed.toLocaleString()}`);
-    state.restartAt = performance.now() + 1500;
+    if (message.outcome === "crashed") {
+      const collision = message.collision || {};
+      const impact = [collision.severity, collision.kind].filter(Boolean).join(" ");
+      showOutcome(
+        `Impact detected${impact ? ` · ${impact}` : ""} after ${elapsed} s · ` +
+          `restarting on seed ${nextSeed.toLocaleString()}`,
+        "crash",
+      );
+      setConnectionState("error", "Impact detected");
+      state.restartAt = performance.now() + 2500;
+    } else {
+      showOutcome(`Run ended after ${elapsed} s · restarting on seed ${nextSeed.toLocaleString()}`);
+      state.restartAt = performance.now() + 1500;
+    }
   }
 }
 
@@ -605,6 +631,28 @@ async function policyLoop() {
   }
 }
 
+function installLocalTestHooks() {
+  if (!LOCAL_MODELS) return;
+  window.__SDR_TEST__ = {
+    forceCrash() {
+      state.pyodide.runPython(`
+env = runtime.env
+car = env.traffic[0]
+env.traffic = [car]
+car.position = env.ego_position
+car.previous_position = env.previous_ego_position
+car.speed = env.ego_speed
+car.desired_speed = env.ego_speed
+car.lane = int(round(env.lane_position))
+car.lane_position = float(env.lane_position)
+car.previous_lane_position = float(env.previous_lane_position)
+car.target_lane = None
+car.lane_change_cooldown = 0
+`);
+    },
+  };
+}
+
 async function boot() {
   setControlsEnabled(false);
   setConnectionState("connecting", "Loading policy");
@@ -617,6 +665,7 @@ async function boot() {
       dynamic_traffic: state.settings.dynamic_traffic,
     });
     state.ready = true;
+    installLocalTestHooks();
     updatePauseUi();
     void policyLoop();
   } catch (error) {
