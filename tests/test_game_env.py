@@ -872,6 +872,31 @@ def test_longitudinal_telemetry_counts_clear_road_stalling() -> None:
     assert info["clear_road_stall_steps"] == 1
 
 
+def test_speed_matched_slow_leader_remains_an_avoidable_pass() -> None:
+    env = NeonHighwayEnv(difficulty_mode="standard")
+    try:
+        env.reset(seed=614)
+        for index, car in enumerate(env.traffic):
+            car.position = env.ego_position + 200.0 + 10.0 * index
+            car.previous_position = car.position
+            car.speed = env.ego_speed
+        leader = env.traffic[0]
+        leader.lane = env.target_lane
+        leader.position = env.ego_position + 20.0
+        leader.previous_position = leader.position
+        leader.speed = env.ego_speed
+        env._invalidate_sensors()
+
+        options = env.passing_lane_options()
+        _, _, _, _, info = env.step(IDLE)
+    finally:
+        env.close()
+
+    assert options
+    assert info["slow_leader_follow_steps"] == 1
+    assert info["avoidable_following_steps"] == 1
+
+
 def test_renderer_accepts_explanatory_driving_intent_hud() -> None:
     env = NeonHighwayEnv(render_mode="rgb_array", difficulty_mode="standard")
     try:
@@ -881,6 +906,8 @@ def test_renderer_accepts_explanatory_driving_intent_hud() -> None:
                 "driving_intent": "PASS LEFT",
                 "desired_speed": 28.0,
                 "speed_reason": "taking persistent safe pass",
+                "braking_mode": "COMFORT BRAKE",
+                "braking_reason": "proportional following response",
             }
         )
 
@@ -891,6 +918,117 @@ def test_renderer_accepts_explanatory_driving_intent_hud() -> None:
     assert frame is not None
     assert frame.ndim == 3
     assert frame.shape[2] == 3
+
+
+def test_traffic_lane_change_moves_smoothly_and_occupies_both_lanes() -> None:
+    env = NeonHighwayEnv(difficulty_mode="standard", dynamic_traffic=True)
+    try:
+        env.reset(seed=721)
+        car = next(car for car in env.traffic if car.lane == 1)
+
+        env._start_traffic_lane_change(car, 2)
+        occupied_at_start = env._traffic_occupied_lanes(car)
+        env._update_traffic_lane_changes()
+        lateral_after_one_step = env.traffic_lateral_position(car)
+    finally:
+        env.close()
+
+    assert occupied_at_start == {1, 2}
+    assert np.isclose(lateral_after_one_step, 1.0 + env.TRAFFIC_LANE_CHANGE_STEP)
+    assert car.lane == 1
+    assert car.target_lane == 2
+
+
+def test_traffic_refuses_to_merge_across_ego_blind_spot() -> None:
+    env = NeonHighwayEnv(difficulty_mode="standard", dynamic_traffic=True)
+    try:
+        env.reset(seed=722)
+        car = next(car for car in env.traffic if car.lane == 0)
+        car.position = env.ego_position + env.CAR_LENGTH + 2.0
+        car.previous_position = car.position
+        car.speed = env.ego_speed
+        env.lane_position = 1.0
+        env.target_lane = 1
+        env._invalidate_sensors()
+
+        safe = env._traffic_lane_change_is_safe(car, 1)
+    finally:
+        env.close()
+
+    assert not safe
+
+
+def test_motivated_traffic_starts_safe_overtake_without_observation_change() -> None:
+    env = NeonHighwayEnv(difficulty_mode="standard", dynamic_traffic=True)
+    try:
+        observation, _ = env.reset(seed=723)
+        for index, car in enumerate(env.traffic):
+            car.position = env.ego_position + 200.0 + 20.0 * index
+            car.previous_position = car.position
+            car.speed = 20.0
+            car.desired_speed = 20.0
+        follower = env.traffic[0]
+        leader = env.traffic[1]
+        follower.lane = 1
+        follower.position = env.ego_position + 50.0
+        follower.previous_position = follower.position
+        follower.speed = 25.0
+        follower.desired_speed = 29.0
+        leader.lane = 1
+        leader.position = follower.position + 20.0
+        leader.previous_position = leader.position
+        leader.speed = 16.0
+        leader.desired_speed = 16.0
+        env._invalidate_sensors()
+
+        env._maybe_start_traffic_lane_changes()
+    finally:
+        env.close()
+
+    assert observation.shape == (33,)
+    assert follower.target_lane in {0, 2}
+    assert env.traffic_lane_changes >= 1
+
+
+def test_dynamic_traffic_preserves_two_wave_actors_per_lane() -> None:
+    env = NeonHighwayEnv(difficulty_mode="hard", dynamic_traffic=True)
+    try:
+        env.reset(seed=724)
+        lane_zero = [car for car in env.traffic if car.lane == 0]
+        for car in lane_zero[2:]:
+            car.lane = 2
+        follower, leader = lane_zero[:2]
+        follower.position = env.ego_position + 50.0
+        follower.previous_position = follower.position
+        follower.speed = 25.0
+        follower.desired_speed = 30.0
+        leader.position = follower.position + 20.0
+        leader.previous_position = leader.position
+        leader.speed = 15.0
+        leader.desired_speed = 15.0
+        env._invalidate_sensors()
+
+        env._maybe_start_traffic_lane_changes()
+    finally:
+        env.close()
+
+    assert follower.target_lane is None
+    assert sum(car.lane == 0 for car in env.traffic) == 2
+
+
+def test_close_ahead_merge_is_recorded_as_traffic_cut_in() -> None:
+    env = NeonHighwayEnv(difficulty_mode="hard", dynamic_traffic=True)
+    try:
+        env.reset(seed=725)
+        car = next(car for car in env.traffic if car.lane == env.target_lane - 1)
+        car.position = env.ego_position + 30.0
+        car.previous_position = car.position
+
+        env._start_traffic_lane_change(car, env.target_lane)
+    finally:
+        env.close()
+
+    assert env.traffic_cut_ins == 1
 
 
 def test_wrong_lane_does_not_evade_blocked_traffic_cost() -> None:

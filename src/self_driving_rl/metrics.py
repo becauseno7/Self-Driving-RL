@@ -41,6 +41,16 @@ class EvaluationSummary:
     longest_survival_seconds: float
     mean_episode_length: float
     mean_speed: float
+    mean_episode_min_speed_kmh: float
+    worst_min_speed_kmh: float
+    hard_braking_steps_per_1000: float
+    full_braking_steps_per_1000: float
+    comfort_brake_commands_per_1000: float
+    emergency_brake_commands_per_1000: float
+    mean_brake_bout_seconds: float
+    p95_brake_bout_seconds: float
+    deep_slowdown_rate: float
+    clear_road_deep_slowdown_rate: float
     mean_distance_km: float
     mean_overtakes: float
     mean_passed_by_traffic: float
@@ -50,12 +60,16 @@ class EvaluationSummary:
     mean_unproductive_lane_changes: float
     mean_rapid_lane_changes: float
     mean_lane_reversals: float
+    mean_traffic_lane_changes: float
+    mean_traffic_cut_ins: float
     mean_missed_passing_opportunities: float
     mean_speed_target_changes: float
     mean_pedal_reversals: float
     mean_unjustified_brakes: float
     unjustified_brakes_per_1000_steps: float
     clear_road_stall_rate: float
+    slow_leader_follow_rate: float
+    avoidable_following_rate: float
     overtakes_per_100km: float
     lane_changes_per_100km: float
     lane_changes_per_overtake: float
@@ -84,6 +98,14 @@ def evaluate_in_env(
     returns: list[float] = []
     lengths: list[int] = []
     speeds: list[float] = []
+    episode_minimum_speeds: list[float] = []
+    brake_bout_steps: list[int] = []
+    hard_braking_steps = 0
+    full_braking_steps = 0
+    comfort_brake_commands = 0
+    emergency_brake_commands = 0
+    deep_slowdown_steps = 0
+    clear_road_deep_slowdown_steps = 0
     crashes = 0
     completions = 0
     timeouts = 0
@@ -102,14 +124,22 @@ def evaluate_in_env(
     unproductive_lane_changes: list[int] = []
     rapid_lane_changes: list[int] = []
     lane_reversals: list[int] = []
+    traffic_lane_changes: list[int] = []
+    traffic_cut_ins: list[int] = []
     missed_passing_opportunities: list[int] = []
     speed_target_changes: list[int] = []
     pedal_reversals: list[int] = []
     unjustified_brakes: list[int] = []
     clear_road_stall_steps = 0
+    slow_leader_follow_steps = 0
+    avoidable_following_steps = 0
     passing_opportunities = 0
     passing_actions = 0
     blocked_steps = 0
+    base_env = env.unwrapped
+    step_seconds = float(getattr(base_env, "DT", 0.1))
+    clear_road_gap = float(getattr(base_env, "CLEAR_ROAD_GAP", 40.0))
+    clear_road_ttc = float(getattr(base_env, "CLEAR_ROAD_TTC", 10.0))
 
     for episode in range(episodes):
         episode_seed = seed + episode
@@ -124,16 +154,42 @@ def evaluate_in_env(
         final_info: dict[str, Any] = {}
         minimum_ttc = float("inf")
         minimum_rear_ttc = float("inf")
+        minimum_speed = float("inf")
+        current_brake_bout_steps = 0
 
         while not (terminated or truncated):
             action = int(policy(observation))
+            hud_data = getattr(policy, "hud_data", {})
+            braking_mode = (
+                str(hud_data.get("braking_mode", ""))
+                if isinstance(hud_data, dict)
+                else ""
+            )
+            comfort_brake_commands += int(braking_mode == "COMFORT BRAKE")
+            emergency_brake_commands += int(braking_mode == "EMERGENCY")
             observation, reward, terminated, truncated, final_info = env.step(action)
             episode_return += float(reward)
             episode_length += 1
             action_counts[str(action)] += 1
 
             if "speed" in final_info:
-                speeds.append(float(final_info["speed"]))
+                step_speed = float(final_info["speed"])
+                speeds.append(step_speed)
+                minimum_speed = min(minimum_speed, step_speed)
+                if step_speed < 15.0:
+                    deep_slowdown_steps += 1
+                    front_gap = float(final_info.get("closest_gap", 0.0))
+                    front_ttc = float(final_info.get("ttc", 0.0))
+                    if front_gap >= clear_road_gap and front_ttc >= clear_road_ttc:
+                        clear_road_deep_slowdown_steps += 1
+            acceleration = float(final_info.get("acceleration", 0.0))
+            hard_braking_steps += int(acceleration <= -3.0)
+            full_braking_steps += int(acceleration <= -5.0)
+            if acceleration < -0.25:
+                current_brake_bout_steps += 1
+            elif current_brake_bout_steps:
+                brake_bout_steps.append(current_brake_bout_steps)
+                current_brake_bout_steps = 0
             if "ttc" in final_info:
                 ttc = float(final_info["ttc"])
                 if np.isfinite(ttc):
@@ -143,6 +199,10 @@ def evaluate_in_env(
                 if np.isfinite(rear_ttc):
                     minimum_rear_ttc = min(minimum_rear_ttc, rear_ttc)
 
+        if current_brake_bout_steps:
+            brake_bout_steps.append(current_brake_bout_steps)
+        if np.isfinite(minimum_speed):
+            episode_minimum_speeds.append(minimum_speed)
         returns.append(episode_return)
         lengths.append(episode_length)
         crashes += int(bool(final_info.get("crashed", False)))
@@ -166,6 +226,8 @@ def evaluate_in_env(
         unproductive_lane_changes.append(int(final_info.get("unproductive_lane_changes", 0)))
         rapid_lane_changes.append(int(final_info.get("rapid_lane_changes", 0)))
         lane_reversals.append(int(final_info.get("lane_reversals", 0)))
+        traffic_lane_changes.append(int(final_info.get("traffic_lane_changes", 0)))
+        traffic_cut_ins.append(int(final_info.get("traffic_cut_ins", 0)))
         missed_passing_opportunities.append(
             int(final_info.get("missed_passing_opportunities", 0))
         )
@@ -173,6 +235,12 @@ def evaluate_in_env(
         pedal_reversals.append(int(final_info.get("pedal_reversals", 0)))
         unjustified_brakes.append(int(final_info.get("unjustified_brakes", 0)))
         clear_road_stall_steps += int(final_info.get("clear_road_stall_steps", 0))
+        slow_leader_follow_steps += int(
+            final_info.get("slow_leader_follow_steps", 0)
+        )
+        avoidable_following_steps += int(
+            final_info.get("avoidable_following_steps", 0)
+        )
         passing_opportunities += int(final_info.get("passing_opportunities", 0))
         passing_actions += int(final_info.get("passing_actions", 0))
         blocked_steps += int(final_info.get("blocked_steps", 0))
@@ -180,6 +248,8 @@ def evaluate_in_env(
     distance_km = float(np.sum(distances)) / 1000.0
     total_overtakes = int(np.sum(overtakes))
     total_lane_changes = int(np.sum(lane_changes))
+    total_steps = max(int(np.sum(lengths)), 1)
+    brake_bout_seconds = np.asarray(brake_bout_steps, dtype=float) * step_seconds
 
     return EvaluationSummary(
         episodes=episodes,
@@ -193,6 +263,36 @@ def evaluate_in_env(
         longest_survival_seconds=float(np.max(survival_seconds)),
         mean_episode_length=float(np.mean(lengths)),
         mean_speed=float(np.mean(speeds)) if speeds else float("nan"),
+        mean_episode_min_speed_kmh=(
+            float(np.mean(episode_minimum_speeds)) * 3.6
+            if episode_minimum_speeds
+            else float("nan")
+        ),
+        worst_min_speed_kmh=(
+            float(np.min(episode_minimum_speeds)) * 3.6
+            if episode_minimum_speeds
+            else float("nan")
+        ),
+        hard_braking_steps_per_1000=1000.0 * hard_braking_steps / total_steps,
+        full_braking_steps_per_1000=1000.0 * full_braking_steps / total_steps,
+        comfort_brake_commands_per_1000=(
+            1000.0 * comfort_brake_commands / total_steps
+        ),
+        emergency_brake_commands_per_1000=(
+            1000.0 * emergency_brake_commands / total_steps
+        ),
+        mean_brake_bout_seconds=(
+            float(np.mean(brake_bout_seconds)) if brake_bout_steps else 0.0
+        ),
+        p95_brake_bout_seconds=(
+            float(np.percentile(brake_bout_seconds, 95.0))
+            if brake_bout_steps
+            else 0.0
+        ),
+        deep_slowdown_rate=deep_slowdown_steps / total_steps,
+        clear_road_deep_slowdown_rate=(
+            clear_road_deep_slowdown_steps / total_steps
+        ),
         mean_distance_km=float(np.mean(distances)) / 1000.0,
         mean_overtakes=float(np.mean(overtakes)),
         mean_passed_by_traffic=float(np.mean(passed_by_traffic)),
@@ -202,14 +302,22 @@ def evaluate_in_env(
         mean_unproductive_lane_changes=float(np.mean(unproductive_lane_changes)),
         mean_rapid_lane_changes=float(np.mean(rapid_lane_changes)),
         mean_lane_reversals=float(np.mean(lane_reversals)),
+        mean_traffic_lane_changes=float(np.mean(traffic_lane_changes)),
+        mean_traffic_cut_ins=float(np.mean(traffic_cut_ins)),
         mean_missed_passing_opportunities=float(np.mean(missed_passing_opportunities)),
         mean_speed_target_changes=float(np.mean(speed_target_changes)),
         mean_pedal_reversals=float(np.mean(pedal_reversals)),
         mean_unjustified_brakes=float(np.mean(unjustified_brakes)),
         unjustified_brakes_per_1000_steps=(
-            1000.0 * int(np.sum(unjustified_brakes)) / max(int(np.sum(lengths)), 1)
+            1000.0 * int(np.sum(unjustified_brakes)) / total_steps
         ),
-        clear_road_stall_rate=clear_road_stall_steps / max(int(np.sum(lengths)), 1),
+        clear_road_stall_rate=clear_road_stall_steps / total_steps,
+        slow_leader_follow_rate=(
+            slow_leader_follow_steps / max(int(np.sum(lengths)), 1)
+        ),
+        avoidable_following_rate=(
+            avoidable_following_steps / max(slow_leader_follow_steps, 1)
+        ),
         overtakes_per_100km=(
             100.0 * total_overtakes / distance_km if distance_km > 0.0 else 0.0
         ),
@@ -227,7 +335,7 @@ def evaluate_in_env(
             if passing_opportunities
             else 0.0
         ),
-        blocked_step_rate=blocked_steps / max(int(np.sum(lengths)), 1),
+        blocked_step_rate=blocked_steps / total_steps,
         mean_min_ttc=(
             float(np.mean(episode_minimum_ttcs)) if episode_minimum_ttcs else float("nan")
         ),

@@ -55,6 +55,10 @@ class TrafficCar:
     color_index: int
     style: int
     braking: bool = False
+    lane_position: float | None = None
+    previous_lane_position: float | None = None
+    target_lane: int | None = None
+    lane_change_cooldown: int = 0
 
 
 @dataclass(frozen=True)
@@ -115,6 +119,7 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
     CRUISE_SPEED = 27.0
     PASSING_TRIGGER_GAP = 32.0
     PASSING_MIN_CLOSING_SPEED = 1.0
+    PASSING_SLOW_LEADER_MARGIN = 3.0
     PASSING_CLEARANCE_GAIN = 8.0
     OVERTAKE_BONUS = 0.60
     PASSED_BY_TRAFFIC_COST = 0.35
@@ -160,6 +165,17 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
     IDM_COMFORT_BRAKING = 4.5
     IDM_EMERGENCY_BRAKING = 9.0
     IDM_EXPONENT = 4.0
+    TRAFFIC_LANE_CHANGE_STEP = 0.10
+    TRAFFIC_LANE_DECISION_STEPS = 8
+    TRAFFIC_LANE_CHANGE_COOLDOWN_STEPS = 50
+    TRAFFIC_PASS_TRIGGER_GAP = 34.0
+    TRAFFIC_PASS_SPEED_GAIN = 2.0
+    TRAFFIC_SAFE_FRONT_GAP = 18.0
+    TRAFFIC_SAFE_REAR_GAP = 14.0
+    TRAFFIC_SAFE_REAR_TTC = 4.0
+    TRAFFIC_DISCRETIONARY_STANDARD_PROBABILITY = 0.08
+    TRAFFIC_DISCRETIONARY_HARD_PROBABILITY = 0.10
+    TRAFFIC_CUT_IN_PROBABILITY = 0.16
 
     def __init__(
         self,
@@ -170,6 +186,7 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         difficulty_mode: str = "hard",
         episode_seconds: float | None = None,
         endless: bool = False,
+        dynamic_traffic: bool = False,
     ) -> None:
         super().__init__()
         if render_mode not in {None, "human", "rgb_array"}:
@@ -193,6 +210,7 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         # until a crash. Waves keep arriving on the same schedule, and the
         # episode clock reports "plenty of road left" for as long as it lasts.
         self.endless = bool(endless)
+        self.dynamic_traffic = bool(dynamic_traffic)
         self.action_space = gym.spaces.Discrete(ACTION_COUNT)
 
         # Ego block, then six readings per lane. See _observation for the
@@ -246,6 +264,10 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         self.pedal_reversals = 0
         self.unjustified_brakes = 0
         self.clear_road_stall_steps = 0
+        self.slow_leader_follow_steps = 0
+        self.avoidable_following_steps = 0
+        self.traffic_lane_changes = 0
+        self.traffic_cut_ins = 0
         self.invalid_actions = 0
         self.challenges_presented = 0
         self.challenges_resolved = 0
@@ -370,6 +392,10 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         self.pedal_reversals = 0
         self.unjustified_brakes = 0
         self.clear_road_stall_steps = 0
+        self.slow_leader_follow_steps = 0
+        self.avoidable_following_steps = 0
+        self.traffic_lane_changes = 0
+        self.traffic_cut_ins = 0
         self.invalid_actions = 0
         self.challenges_presented = 0
         self.challenges_resolved = 0
@@ -412,6 +438,24 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
             behind = -float(self.np_random.uniform(28.0, 62.0))
             self.traffic.append(self._new_car(lane, behind))
 
+    @staticmethod
+    def traffic_lateral_position(car: TrafficCar) -> float:
+        """Continuous lane coordinate, while preserving legacy integer lanes."""
+        return float(car.lane) if car.lane_position is None else car.lane_position
+
+    @staticmethod
+    def _traffic_previous_lateral_position(car: TrafficCar) -> float:
+        if car.previous_lane_position is None:
+            return NeonHighwayEnv.traffic_lateral_position(car)
+        return car.previous_lane_position
+
+    @staticmethod
+    def _traffic_occupied_lanes(car: TrafficCar) -> set[int]:
+        lanes = {car.lane}
+        if car.target_lane is not None:
+            lanes.add(car.target_lane)
+        return lanes
+
     def _new_car(self, lane: int, position: float) -> TrafficCar:
         speed_range = (13.0, 31.0) if self.difficulty_mode == "hard" else (16.0, 29.0)
         desired_speed = float(self.np_random.uniform(*speed_range))
@@ -431,6 +475,10 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         car.speed = speed
         car.desired_speed = speed
         car.braking = False
+        car.lane_position = None
+        car.previous_lane_position = None
+        car.target_lane = None
+        car.lane_change_cooldown = 0
 
     def _is_visible(self, car: TrafficCar) -> bool:
         relative = car.position - self.ego_position
@@ -570,6 +618,7 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         self._invalidate_sensors()
         passing_options = self.passing_lane_options()
         passing_opportunity = bool(passing_options)
+        slow_leader_before_action = self.slow_leader_ahead()
         if passing_opportunity and not self._passing_opportunity_active:
             self.passing_opportunities += 1
         elif not passing_opportunity and self._passing_opportunity_active:
@@ -601,6 +650,12 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
             self._last_noncoast_pedal = requested_pedal
             self._last_noncoast_pedal_step = self.step_count
         action_result = self._apply_action(action, passing_options=passing_options)
+        self.slow_leader_follow_steps += int(slow_leader_before_action)
+        self.avoidable_following_steps += int(
+            slow_leader_before_action
+            and passing_opportunity
+            and not action_result["passing_maneuver"]
+        )
         self.speed_target_changes += int(bool(action_result["speed_target_changed"]))
         if action_result["passing_maneuver"]:
             self.passing_actions += 1
@@ -770,9 +825,16 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
 
         sensors = self._sensors()
         front_gap, front_relative, _, _ = sensors[self.target_lane]
+        leader_speed = self.ego_speed + front_relative
+        slow_leader = (
+            leader_speed < self.CRUISE_SPEED - self.PASSING_SLOW_LEADER_MARGIN
+        )
         if (
             front_gap >= self.PASSING_TRIGGER_GAP
-            or front_relative >= -self.PASSING_MIN_CLOSING_SPEED
+            or (
+                front_relative >= -self.PASSING_MIN_CLOSING_SPEED
+                and not slow_leader
+            )
         ):
             return ()
 
@@ -803,6 +865,17 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
                 options.append(candidate)
         return tuple(options)
 
+    def slow_leader_ahead(self) -> bool:
+        """Whether the ego is settled behind traffic well below cruise speed."""
+        if abs(self.lane_position - self.target_lane) >= 0.05:
+            return False
+        front_gap, front_relative, _, _ = self._sensors()[self.target_lane]
+        leader_speed = self.ego_speed + front_relative
+        return (
+            front_gap < self.PASSING_TRIGGER_GAP
+            and leader_speed < self.CRUISE_SPEED - self.PASSING_SLOW_LEADER_MARGIN
+        )
+
     def _traffic_progress_events(self) -> tuple[int, int]:
         """Count real centre-line crossings before any off-screen recycling."""
         overtakes = 0
@@ -826,31 +899,192 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
             self.lane_position = float(self.target_lane)
         self.ego_position += self.ego_speed * self.DT
 
-        # One sorted pass per lane resolves every leader, instead of scanning
-        # the whole traffic list once per car.
-        for lane in range(self.LANES):
-            lane_cars = sorted(
-                (car for car in self.traffic if car.lane == lane),
-                key=lambda car: car.position,
-                reverse=True,
-            )
-            ego_in_lane = abs(float(lane) - self.lane_position) < self.TRAFFIC_YIELD_WIDTH
-            leader: tuple[float, float] | None = None
-            for car in lane_cars:
-                if ego_in_lane and self.ego_position > car.position:
-                    ego = (self.ego_position, self.ego_speed)
-                    leader = ego if leader is None or ego[0] < leader[0] else leader
-                car.previous_position = car.position
-                acceleration = self._traffic_acceleration(car, leader)
-                car.braking = acceleration < -0.8
-                car.speed = float(
-                    np.clip(car.speed + acceleration * self.DT, self.MIN_SPEED, self.MAX_SPEED)
+        self._update_traffic_lane_changes()
+
+        accelerations = [self._traffic_acceleration(car) for car in self.traffic]
+        for car, acceleration in zip(self.traffic, accelerations, strict=True):
+            car.previous_position = car.position
+            car.braking = acceleration < -0.8
+            car.speed = float(
+                np.clip(
+                    car.speed + acceleration * self.DT,
+                    self.MIN_SPEED,
+                    self.MAX_SPEED,
                 )
-                leader = (car.position, car.speed)
-                car.position += car.speed * self.DT
+            )
+            car.position += car.speed * self.DT
 
         self._resolve_traffic_overlap()
         self._invalidate_sensors()
+
+    def _update_traffic_lane_changes(self) -> None:
+        for car in self.traffic:
+            car.lane_change_cooldown = max(car.lane_change_cooldown - 1, 0)
+
+        if (
+            self.dynamic_traffic
+            and not self.challenge_active
+            and self.step_count > 0
+            and self.step_count % self.TRAFFIC_LANE_DECISION_STEPS == 0
+        ):
+            self._maybe_start_traffic_lane_changes()
+
+        for car in self.traffic:
+            if car.lane_position is None or car.target_lane is None:
+                continue
+            car.previous_lane_position = car.lane_position
+            lane_delta = np.clip(
+                car.target_lane - car.lane_position,
+                -self.TRAFFIC_LANE_CHANGE_STEP,
+                self.TRAFFIC_LANE_CHANGE_STEP,
+            )
+            car.lane_position += float(lane_delta)
+            if abs(car.lane_position - car.target_lane) < 0.02:
+                car.lane = car.target_lane
+                car.lane_position = None
+                car.previous_lane_position = None
+                car.target_lane = None
+
+    def _traffic_lane_reading(
+        self,
+        car: TrafficCar,
+        lane: int,
+    ) -> tuple[float, float, float, float]:
+        """Bumper gaps and neighbor speeds relative to one traffic car."""
+        ahead: list[tuple[float, float]] = [
+            (other.position, other.speed)
+            for other in self.traffic
+            if other is not car
+            and lane in self._traffic_occupied_lanes(other)
+            and other.position >= car.position
+        ]
+        behind: list[tuple[float, float]] = [
+            (other.position, other.speed)
+            for other in self.traffic
+            if other is not car
+            and lane in self._traffic_occupied_lanes(other)
+            and other.position < car.position
+        ]
+        if abs(float(lane) - self.lane_position) < self.TRAFFIC_YIELD_WIDTH:
+            ego = (self.ego_position, self.ego_speed)
+            (ahead if self.ego_position >= car.position else behind).append(ego)
+
+        if ahead:
+            ahead_position, ahead_speed = min(ahead, key=lambda item: item[0])
+            ahead_gap = max(ahead_position - car.position - self.CAR_LENGTH, 0.0)
+        else:
+            ahead_gap, ahead_speed = self.SENSOR_DISTANCE, car.desired_speed
+        if behind:
+            behind_position, behind_speed = max(behind, key=lambda item: item[0])
+            behind_gap = max(car.position - behind_position - self.CAR_LENGTH, 0.0)
+        else:
+            behind_gap, behind_speed = self.SENSOR_DISTANCE, car.speed
+        return ahead_gap, ahead_speed, behind_gap, behind_speed
+
+    def _traffic_lane_change_is_safe(self, car: TrafficCar, lane: int) -> bool:
+        ahead_gap, _, behind_gap, behind_speed = self._traffic_lane_reading(car, lane)
+        rear_closing_speed = max(behind_speed - car.speed, 0.0)
+        rear_ttc = (
+            behind_gap / rear_closing_speed
+            if rear_closing_speed > 0.1
+            else float("inf")
+        )
+        return (
+            ahead_gap > self.TRAFFIC_SAFE_FRONT_GAP
+            and behind_gap > self.TRAFFIC_SAFE_REAR_GAP
+            and rear_ttc > self.TRAFFIC_SAFE_REAR_TTC
+        )
+
+    def _start_traffic_lane_change(self, car: TrafficCar, target_lane: int) -> None:
+        car.lane_position = float(car.lane)
+        car.previous_lane_position = car.lane_position
+        car.target_lane = target_lane
+        car.lane_change_cooldown = self.TRAFFIC_LANE_CHANGE_COOLDOWN_STEPS
+        self.traffic_lane_changes += 1
+        relative = car.position - self.ego_position
+        if target_lane == self.target_lane and 0.0 < relative < 45.0:
+            self.traffic_cut_ins += 1
+        self._invalidate_sensors()
+
+    def _maybe_start_traffic_lane_changes(self) -> None:
+        """MOBIL-like safe overtakes for traffic, with target-lane reservations."""
+        for car in sorted(self.traffic, key=lambda item: item.position, reverse=True):
+            if car.target_lane is not None or car.lane_change_cooldown > 0:
+                continue
+            available_in_origin = sum(
+                other.lane == car.lane and other.target_lane is None
+                for other in self.traffic
+            )
+            if available_in_origin <= 2:
+                # Hard waves need separate front/rear actors in every lane.
+                continue
+            relative = car.position - self.ego_position
+            if not -self.VISIBLE_BEHIND <= relative <= self.VISIBLE_AHEAD:
+                continue
+
+            cut_in_lane = self.target_lane
+            close_ahead_cut_in = (
+                car.lane != cut_in_lane
+                and abs(car.lane - cut_in_lane) == 1
+                and 18.0 < relative < 45.0
+                and self._traffic_lane_change_is_safe(car, cut_in_lane)
+                and self.np_random.random() < self.TRAFFIC_CUT_IN_PROBABILITY
+            )
+            if close_ahead_cut_in:
+                self._start_traffic_lane_change(car, cut_in_lane)
+                continue
+
+            current_gap, leader_speed, _, _ = self._traffic_lane_reading(car, car.lane)
+            motivated = (
+                current_gap < self.TRAFFIC_PASS_TRIGGER_GAP
+                and car.desired_speed
+                > leader_speed + self.TRAFFIC_PASS_SPEED_GAIN
+            )
+            discretionary_probability = (
+                self.TRAFFIC_DISCRETIONARY_HARD_PROBABILITY
+                if self.difficulty_mode == "hard"
+                else self.TRAFFIC_DISCRETIONARY_STANDARD_PROBABILITY
+            )
+            discretionary = (
+                not motivated
+                and self.np_random.random() < discretionary_probability
+            )
+            if not (motivated or discretionary):
+                continue
+
+            candidates: list[tuple[float, int]] = []
+            for candidate_lane in (car.lane - 1, car.lane + 1):
+                if not 0 <= candidate_lane < self.LANES:
+                    continue
+                if not self._traffic_lane_change_is_safe(car, candidate_lane):
+                    continue
+                ahead_gap, ahead_speed, _, _ = self._traffic_lane_reading(
+                    car, candidate_lane
+                )
+                passing_better = (
+                    motivated
+                    and ahead_gap > current_gap + self.PASSING_CLEARANCE_GAIN
+                    and (
+                        ahead_speed > leader_speed + self.TRAFFIC_PASS_SPEED_GAIN
+                        or ahead_gap
+                        > current_gap + 2.0 * self.PASSING_CLEARANCE_GAIN
+                    )
+                )
+                discretionary_reasonable = (
+                    discretionary
+                    # Ambient route-choice changes make traffic readable and
+                    # varied even when a car is not trapped behind a leader.
+                    # The target may be slightly less open, but never cramped;
+                    # the independent gap/TTC shield above remains mandatory.
+                    and ahead_gap > max(24.0, current_gap - 8.0)
+                    and ahead_speed >= leader_speed - 2.0
+                )
+                if passing_better or discretionary_reasonable:
+                    score = ahead_gap + 2.0 * max(ahead_speed - leader_speed, 0.0)
+                    candidates.append((score, candidate_lane))
+            if candidates:
+                _, target_lane = max(candidates)
+                self._start_traffic_lane_change(car, target_lane)
 
     def _update_ego_speed(self) -> None:
         speed_error = self.target_speed - self.ego_speed
@@ -879,15 +1113,21 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
 
     def _leader_of(self, car: TrafficCar) -> tuple[float, float] | None:
         """Nearest obstacle ahead of `car` in its lane, including the ego."""
+        occupied_lanes = self._traffic_occupied_lanes(car)
         leaders: list[tuple[float, float]] = [
             (other.position, other.speed)
             for other in self.traffic
-            if other is not car and other.lane == car.lane and other.position > car.position
+            if other is not car
+            and occupied_lanes.intersection(self._traffic_occupied_lanes(other))
+            and other.position > car.position
         ]
         # A merging ego is a hazard well before it reaches the lane centre, so
         # traffic starts yielding at TRAFFIC_YIELD_WIDTH rather than at the
         # narrower width that counts as a collision.
-        if abs(float(car.lane) - self.lane_position) < self.TRAFFIC_YIELD_WIDTH:
+        if any(
+            abs(float(lane) - self.lane_position) < self.TRAFFIC_YIELD_WIDTH
+            for lane in occupied_lanes
+        ):
             if self.ego_position > car.position:
                 leaders.append((self.ego_position, self.ego_speed))
 
@@ -941,17 +1181,21 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         difference, so overlaps are projected out front-to-back. The ego is
         deliberately excluded: being rear-ended is a real failure mode.
         """
-        for lane in range(self.LANES):
-            lane_cars = sorted(
-                (car for car in self.traffic if car.lane == lane),
-                key=lambda car: car.position,
-                reverse=True,
-            )
-            for leader, follower in zip(lane_cars, lane_cars[1:], strict=False):
-                limit = leader.position - self.CAR_LENGTH
-                if follower.position > limit:
-                    follower.position = limit
-                    follower.speed = min(follower.speed, leader.speed)
+        ordered = sorted(self.traffic, key=lambda car: car.position, reverse=True)
+        for index, follower in enumerate(ordered[1:], start=1):
+            follower_lanes = self._traffic_occupied_lanes(follower)
+            leaders = [
+                leader
+                for leader in ordered[:index]
+                if follower_lanes.intersection(self._traffic_occupied_lanes(leader))
+            ]
+            if not leaders:
+                continue
+            leader = min(leaders, key=lambda candidate: candidate.position)
+            limit = leader.position - self.CAR_LENGTH
+            if follower.position > limit:
+                follower.position = limit
+                follower.speed = min(follower.speed, leader.speed)
 
     def _recycle_traffic(self) -> None:
         pressure = self.difficulty
@@ -998,6 +1242,10 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         car.color_index = int(self.np_random.integers(0, 8))
         car.style = int(self.np_random.integers(0, 3))
         car.braking = False
+        car.lane_position = None
+        car.previous_lane_position = None
+        car.target_lane = None
+        car.lane_change_cooldown = 0
 
     @staticmethod
     def _swept_overlap_interval(
@@ -1040,8 +1288,10 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
             if longitudinal_interval is None:
                 continue
 
-            previous_lateral = float(car.lane) - self.previous_lane_position
-            current_lateral = float(car.lane) - self.lane_position
+            previous_car_lateral = self._traffic_previous_lateral_position(car)
+            current_car_lateral = self.traffic_lateral_position(car)
+            previous_lateral = previous_car_lateral - self.previous_lane_position
+            current_lateral = current_car_lateral - self.lane_position
             lateral_interval = self._swept_overlap_interval(
                 previous_lateral,
                 current_lateral,
@@ -1079,10 +1329,15 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
         contact_time, _, car, contact_gap, contact_lateral = min(
             hits, key=lambda hit: (hit[0], hit[1])
         )
-        lateral_motion = self.lane_position - self.previous_lane_position
+        previous_car_lateral = self._traffic_previous_lateral_position(car)
+        current_car_lateral = self.traffic_lateral_position(car)
+        ego_lateral_motion = self.lane_position - self.previous_lane_position
+        traffic_lateral_motion = current_car_lateral - previous_car_lateral
+        lateral_motion = ego_lateral_motion - traffic_lateral_motion
         changing_lanes = (
             abs(lateral_motion) > 1e-6
             or abs(self.lane_position - self.target_lane) > 0.05
+            or car.target_lane is not None
         )
         if changing_lanes or abs(contact_lateral) > 0.2:
             kind = "SIDE IMPACT"
@@ -1107,7 +1362,13 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
             impact_speed=impact_speed,
             relative_position=contact_gap,
             traffic_speed=car.speed,
-            lane=car.lane,
+            lane=int(
+                np.clip(
+                    round(self.traffic_lateral_position(car)),
+                    0,
+                    self.LANES - 1,
+                )
+            ),
         )
 
     def current_threat(self) -> dict[str, float]:
@@ -1256,10 +1517,14 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
             ahead = [
                 car
                 for car in self.traffic
-                if car.lane == lane and car.position >= self.ego_position
+                if lane in self._traffic_occupied_lanes(car)
+                and car.position >= self.ego_position
             ]
             behind = [
-                car for car in self.traffic if car.lane == lane and car.position < self.ego_position
+                car
+                for car in self.traffic
+                if lane in self._traffic_occupied_lanes(car)
+                and car.position < self.ego_position
             ]
 
             # Gaps are bumper-to-bumper: a centre-to-centre distance below one
@@ -1399,6 +1664,11 @@ class NeonHighwayEnv(gym.Env[NDArray[np.float32], int]):
             "pedal_reversals": self.pedal_reversals,
             "unjustified_brakes": self.unjustified_brakes,
             "clear_road_stall_steps": self.clear_road_stall_steps,
+            "slow_leader_follow_steps": self.slow_leader_follow_steps,
+            "avoidable_following_steps": self.avoidable_following_steps,
+            "traffic_lane_changes": self.traffic_lane_changes,
+            "traffic_cut_ins": self.traffic_cut_ins,
+            "dynamic_traffic": self.dynamic_traffic,
             "distance_m": self.ego_position,
             "invalid_actions": self.invalid_actions,
             "ttc": threat["ttc"],

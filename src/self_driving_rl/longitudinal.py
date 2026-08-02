@@ -8,7 +8,7 @@ planner in place of tenth-of-a-second pedal jitter.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 from typing import Any
 
 import numpy as np
@@ -31,10 +31,19 @@ from self_driving_rl.game_env import (
 class DrivingIntent(StrEnum):
     CRUISE = "CRUISE"
     FOLLOW = "FOLLOW"
+    SEARCH_PASS = "SEARCH PASS"
     PASS_LEFT = "PASS LEFT"
     PASS_RIGHT = "PASS RIGHT"
     RETURN = "RETURN"
     EMERGENCY = "EMERGENCY"
+
+
+class SpeedGuidance(IntEnum):
+    """Persistent high-level human guidance; never a raw pedal command."""
+
+    BASE = 0
+    FASTER = 1
+    SLOWER = 2
 
 
 @dataclass(frozen=True)
@@ -46,17 +55,26 @@ class LongitudinalConfig:
     follow_trigger_margin: float = 7.0
     critical_front_urgency: float = 0.72
     braking_front_urgency: float = 0.42
+    braking_release_urgency: float = 0.30
     rear_pressure_urgency: float = 0.55
     speed_deadband: float = 0.75
     command_interval_steps: int = 4
+    recovery_command_interval_steps: int = 3
+    comfort_brake_min_interval_steps: int = 2
+    comfort_brake_max_interval_steps: int = 4
     emergency_command_interval_steps: int = 1
     pass_commitment_steps: int = 35
     pass_opportunity_dwell_steps: int = 5
     desired_speed_smoothing: float = 0.22
+    comfort_deceleration_smoothing: float = 0.35
+    maximum_comfort_speed_deficit: float = 1.0
     merge_projection_seconds: float = 0.6
     merge_origin_exposure_seconds: float = 0.3
     merge_front_buffer: float = 3.0
     merge_rear_buffer: float = 3.0
+    recognize_speed_matched_slow_leaders: bool = True
+    guidance_duration_steps: int = 30
+    guidance_speed_delta: float = 4.0
 
 
 def observed_lane_reading(
@@ -77,6 +95,8 @@ def observed_lane_reading(
 
 def observed_passing_options(
     observation: NDArray[np.floating[Any]],
+    *,
+    include_speed_matched_slow_leaders: bool = True,
 ) -> tuple[int, ...]:
     """Reconstruct safe and useful adjacent passing lanes from observation."""
     if float(observation[4]) >= 0.05:
@@ -85,9 +105,21 @@ def observed_passing_options(
     front_gap, front_relative, _, _, _, _ = observed_lane_reading(
         observation, target_lane
     )
+    speed_span = NeonHighwayEnv.MAX_SPEED - NeonHighwayEnv.MIN_SPEED
+    ego_speed = NeonHighwayEnv.MIN_SPEED + float(observation[0]) * speed_span
+    leader_speed = ego_speed + front_relative
+    slow_leader = (
+        include_speed_matched_slow_leaders
+        and leader_speed
+        < NeonHighwayEnv.CRUISE_SPEED
+        - NeonHighwayEnv.PASSING_SLOW_LEADER_MARGIN
+    )
     if (
         front_gap >= NeonHighwayEnv.PASSING_TRIGGER_GAP
-        or front_relative >= -NeonHighwayEnv.PASSING_MIN_CLOSING_SPEED
+        or (
+            front_relative >= -NeonHighwayEnv.PASSING_MIN_CLOSING_SPEED
+            and not slow_leader
+        )
     ):
         return ()
 
@@ -148,10 +180,44 @@ class LongitudinalIntentPolicy:
         self._pass_steps_remaining = 0
         self._pass_direction = 0
         self._pass_opportunity_steps = 0
+        self._slow_leader_steps = 0
+        self._comfort_braking_active = False
+        self.braking_mode = "COAST"
+        self.braking_reason = "open-road speed hold"
+        self.speed_guidance = SpeedGuidance.BASE
+        self.speed_guidance_target = self.config.cruise_speed
+        self._speed_guidance_steps_remaining = 0
+
+    def set_speed_guidance(
+        self,
+        guidance: SpeedGuidance | int,
+        *,
+        current_speed: float,
+        duration_steps: int | None = None,
+    ) -> None:
+        """Latch a human speed preference for the smooth planner to execute."""
+        selected = SpeedGuidance(int(guidance))
+        if selected == SpeedGuidance.BASE:
+            self.speed_guidance = selected
+            self.speed_guidance_target = self.config.cruise_speed
+            self._speed_guidance_steps_remaining = 0
+            return
+        delta = self.config.guidance_speed_delta
+        if selected == SpeedGuidance.FASTER:
+            target = min(self.config.passing_speed, current_speed + delta)
+        else:
+            target = max(NeonHighwayEnv.MIN_SPEED, current_speed - delta)
+        self.speed_guidance = selected
+        self.speed_guidance_target = float(target)
+        self._speed_guidance_steps_remaining = (
+            self.config.guidance_duration_steps
+            if duration_steps is None
+            else max(1, int(duration_steps))
+        )
 
     @property
     def hud_data(self) -> dict[str, Any]:
-        return {
+        data = {
             "driving_intent": str(self.intent),
             "desired_speed": self.desired_speed,
             "speed_reason": self.reason,
@@ -159,7 +225,15 @@ class LongitudinalIntentPolicy:
             "speed_intervened": self.intervened,
             "lane_intervened": self.lane_intervened,
             "lane_veto_reason": self.lane_veto_reason,
+            "speed_guidance": self.speed_guidance.name,
+            "speed_guidance_target": self.speed_guidance_target,
+            "braking_mode": self.braking_mode,
+            "braking_reason": self.braking_reason,
         }
+        preference_decision = getattr(self.lane_policy, "last_decision", None)
+        if preference_decision is not None:
+            data["preference_decision"] = str(preference_decision)
+        return data
 
     @staticmethod
     def _speed(observation: NDArray[np.floating[Any]], index: int) -> float:
@@ -179,6 +253,27 @@ class LongitudinalIntentPolicy:
         }
         lanes.add(target_lane)
         return tuple(sorted(lanes))
+
+    def _following_speed(
+        self,
+        road: dict[str, float],
+        speed: float,
+        desired_gap: float,
+    ) -> float:
+        """A comfortable follow target that never dives far below its leader."""
+        leader_speed = speed + road["front_relative"]
+        gap_adjustment = np.clip(
+            (road["front_gap"] - desired_gap) / 8.0,
+            -self.config.maximum_comfort_speed_deficit,
+            2.0,
+        )
+        return float(
+            np.clip(
+                leader_speed + gap_adjustment,
+                NeonHighwayEnv.MIN_SPEED,
+                self.config.cruise_speed,
+            )
+        )
 
     def _road_state(
         self, observation: NDArray[np.floating[Any]]
@@ -206,7 +301,12 @@ class LongitudinalIntentPolicy:
         steer, _ = decode_action(raw_action)
         target_lane = int(round(float(observation[3]) * (NeonHighwayEnv.LANES - 1)))
         candidate_lane = target_lane + (-1 if steer == STEER_LEFT else 1)
-        passing_options = observed_passing_options(observation)
+        passing_options = observed_passing_options(
+            observation,
+            include_speed_matched_slow_leaders=(
+                self.config.recognize_speed_matched_slow_leaders
+            ),
+        )
         starts_pass = steer != STEER_KEEP and candidate_lane in passing_options
         if starts_pass:
             self._pass_steps_remaining = self.config.pass_commitment_steps
@@ -228,22 +328,10 @@ class LongitudinalIntentPolicy:
             self.config.minimum_follow_gap,
             self.config.follow_time_headway * speed,
         )
-        if road["front_urgency"] >= self.config.braking_front_urgency:
+        if self._comfort_braking_active:
             self._pass_steps_remaining = 0
             self._pass_direction = 0
-            leader_speed = speed + road["front_relative"]
-            gap_adjustment = np.clip(
-                (road["front_gap"] - desired_gap) / 8.0,
-                -3.0,
-                2.0,
-            )
-            desired = float(
-                np.clip(
-                    leader_speed + gap_adjustment,
-                    NeonHighwayEnv.MIN_SPEED,
-                    self.config.cruise_speed,
-                )
-            )
+            desired = self._following_speed(road, speed, desired_gap)
             return DrivingIntent.FOLLOW, desired, "pass paused for closing traffic"
 
         if self._pass_steps_remaining > 0:
@@ -254,6 +342,15 @@ class LongitudinalIntentPolicy:
             )
             return intent, self.config.passing_speed, "committed safe pass"
 
+        if self._slow_leader_steps > 0:
+            desired = self._following_speed(road, speed, desired_gap)
+            waited_seconds = self._slow_leader_steps * NeonHighwayEnv.DT
+            return (
+                DrivingIntent.SEARCH_PASS,
+                desired,
+                f"waiting {waited_seconds:.1f}s for safe pass gap",
+            )
+
         following = (
             road["front_gap"] < desired_gap + self.config.follow_trigger_margin
             and (
@@ -262,19 +359,7 @@ class LongitudinalIntentPolicy:
             )
         )
         if following:
-            leader_speed = speed + road["front_relative"]
-            gap_adjustment = np.clip(
-                (road["front_gap"] - desired_gap) / 8.0,
-                -3.0,
-                2.0,
-            )
-            desired = float(
-                np.clip(
-                    leader_speed + gap_adjustment,
-                    NeonHighwayEnv.MIN_SPEED,
-                    self.config.cruise_speed,
-                )
-            )
+            desired = self._following_speed(road, speed, desired_gap)
             return DrivingIntent.FOLLOW, desired, "stable time headway"
 
         if steer != STEER_KEEP:
@@ -344,7 +429,12 @@ class LongitudinalIntentPolicy:
     ) -> tuple[int, str]:
         """Respect the learned lane choice, then take persistent easy openings."""
         protected_steer, reason = self._protected_steer(observation, raw_steer)
-        passing_options = observed_passing_options(observation)
+        passing_options = observed_passing_options(
+            observation,
+            include_speed_matched_slow_leaders=(
+                self.config.recognize_speed_matched_slow_leaders
+            ),
+        )
         lane_change_finished = float(observation[4]) < 0.05
         can_consider_pass = (
             lane_change_finished
@@ -388,15 +478,55 @@ class LongitudinalIntentPolicy:
         speed: float,
         road: dict[str, float],
     ) -> int:
-        urgent = road["front_urgency"] >= self.config.braking_front_urgency
         emergency = self.intent == DrivingIntent.EMERGENCY
-        interval = (
-            self.config.emergency_command_interval_steps
-            if emergency or urgent
-            else self.config.command_interval_steps
-        )
+        slowing = target_speed > self.desired_speed + 0.25
+        recovering = target_speed < self.desired_speed - self.config.speed_deadband
+        if emergency:
+            interval = self.config.emergency_command_interval_steps
+        elif slowing and self._comfort_braking_active:
+            urgency_span = max(
+                self.config.critical_front_urgency
+                - self.config.braking_release_urgency,
+                1e-6,
+            )
+            severity = float(
+                np.clip(
+                    (road["front_urgency"] - self.config.braking_release_urgency)
+                    / urgency_span,
+                    0.0,
+                    1.0,
+                )
+            )
+            interval = int(
+                round(
+                    self.config.comfort_brake_max_interval_steps
+                    - severity
+                    * (
+                        self.config.comfort_brake_max_interval_steps
+                        - self.config.comfort_brake_min_interval_steps
+                    )
+                )
+            )
+        elif recovering and not self._comfort_braking_active:
+            interval = self.config.recovery_command_interval_steps
+        else:
+            interval = self.config.command_interval_steps
         ready = self._step - self._last_speed_command_step >= interval
         if not ready:
+            if slowing:
+                self.braking_mode = "COAST"
+                self.braking_reason = "metering target-speed reduction"
+            elif recovering:
+                self.braking_mode = "RECOVER"
+                self.braking_reason = "smooth return to speed plan"
+            else:
+                self.braking_mode = "COAST"
+                self.braking_reason = (
+                    "matching slower traffic"
+                    if self.intent
+                    in {DrivingIntent.FOLLOW, DrivingIntent.SEARCH_PASS}
+                    else "target speed settled"
+                )
             return PEDAL_COAST
 
         if emergency and (
@@ -404,17 +534,20 @@ class LongitudinalIntentPolicy:
             or speed > self.desired_speed + self.config.speed_deadband
         ):
             self._last_speed_command_step = self._step
+            self.braking_mode = "EMERGENCY"
+            self.braking_reason = "critical closing TTC"
             return PEDAL_BRAKE
 
-        if (
-            road["front_urgency"] >= self.config.braking_front_urgency
-            and target_speed > self.desired_speed
-        ):
+        if self._comfort_braking_active and slowing:
             self._last_speed_command_step = self._step
+            self.braking_mode = "COMFORT BRAKE"
+            self.braking_reason = "proportional following response"
             return PEDAL_BRAKE
 
-        if target_speed < self.desired_speed - self.config.speed_deadband:
+        if recovering:
             self._last_speed_command_step = self._step
+            self.braking_mode = "RECOVER"
+            self.braking_reason = "smooth return to speed plan"
             return PEDAL_GAS
 
         if target_speed > self.desired_speed + self.config.speed_deadband:
@@ -422,33 +555,113 @@ class LongitudinalIntentPolicy:
                 road["rear_urgency"] >= self.config.rear_pressure_urgency
                 and road["front_urgency"] < self.config.braking_front_urgency
             ):
+                self.braking_mode = "COAST"
+                self.braking_reason = "rear pressure blocks extra braking"
                 return PEDAL_COAST
             self._last_speed_command_step = self._step
+            self.braking_mode = "COMFORT BRAKE"
+            self.braking_reason = "settling stable following speed"
             return PEDAL_BRAKE
+        self.braking_mode = "COAST"
+        self.braking_reason = (
+            "matching slower traffic"
+            if self.intent in {DrivingIntent.FOLLOW, DrivingIntent.SEARCH_PASS}
+            else "target speed settled"
+        )
         return PEDAL_COAST
 
     def __call__(self, observation: NDArray[np.floating[Any]]) -> int:
         self._step += 1
         raw_action = int(self.lane_policy(observation))
         raw_steer, raw_pedal = decode_action(raw_action)
+        speed = self._speed(observation, 0)
+        target_lane = int(
+            round(float(observation[3]) * (NeonHighwayEnv.LANES - 1))
+        )
+        front_gap, front_relative, _, _, _, _ = observed_lane_reading(
+            observation, target_lane
+        )
+        slow_leader = (
+            float(observation[4]) < 0.05
+            and front_gap < NeonHighwayEnv.PASSING_TRIGGER_GAP
+            and speed + front_relative
+            < self.config.cruise_speed
+            - NeonHighwayEnv.PASSING_SLOW_LEADER_MARGIN
+        )
+        self._slow_leader_steps = (
+            self._slow_leader_steps + 1 if slow_leader else 0
+        )
         protected_steer, lane_veto_reason = self._planned_steer(
             observation, raw_steer
         )
         protected_action = encode_action(protected_steer, raw_pedal)
-        speed = self._speed(observation, 0)
         target_speed = self._speed(observation, 1)
         road = self._road_state(observation)
+        if road["front_urgency"] >= self.config.critical_front_urgency:
+            self._comfort_braking_active = False
+        elif road["front_urgency"] >= self.config.braking_front_urgency:
+            self._comfort_braking_active = True
+        elif road["front_urgency"] <= self.config.braking_release_urgency:
+            self._comfort_braking_active = False
         intent, raw_desired_speed, reason = self._select_intent(
             observation, protected_action, road, speed
         )
+        active_guidance = (
+            self.speed_guidance
+            if self._speed_guidance_steps_remaining > 0
+            else SpeedGuidance.BASE
+        )
+        if (
+            active_guidance == SpeedGuidance.FASTER
+            and intent
+            in {
+                DrivingIntent.CRUISE,
+                DrivingIntent.PASS_LEFT,
+                DrivingIntent.PASS_RIGHT,
+                DrivingIntent.RETURN,
+            }
+            and road["front_urgency"] < self.config.braking_front_urgency
+        ):
+            raw_desired_speed = max(raw_desired_speed, self.speed_guidance_target)
+            reason = "human-taught faster progress"
+        elif active_guidance == SpeedGuidance.SLOWER:
+            raw_desired_speed = min(raw_desired_speed, self.speed_guidance_target)
+            reason = "human-taught slower progress"
+        if self._speed_guidance_steps_remaining > 0:
+            self._speed_guidance_steps_remaining -= 1
+            if self._speed_guidance_steps_remaining == 0:
+                self.speed_guidance = SpeedGuidance.BASE
         self.intent = intent
         self.reason = reason
-        # Safety is asymmetric: slow-down plans take effect immediately, while
-        # acceleration is smoothed so reopening gaps do not cause pedal chatter.
-        if intent == DrivingIntent.EMERGENCY or raw_desired_speed < self.desired_speed:
+        # Emergency targets take effect immediately. Ordinary following moves
+        # toward its target proportionally, avoiding a one-frame plunge from
+        # cruise speed to a slow leader's speed.
+        if intent == DrivingIntent.EMERGENCY:
             self.desired_speed = raw_desired_speed
         else:
-            smoothing = self.config.desired_speed_smoothing
+            smoothing = (
+                self.config.comfort_deceleration_smoothing
+                + (
+                    1.0 - self.config.comfort_deceleration_smoothing
+                )
+                * float(
+                    np.clip(
+                        (
+                            road["front_urgency"]
+                            - self.config.braking_release_urgency
+                        )
+                        / max(
+                            self.config.critical_front_urgency
+                            - self.config.braking_release_urgency,
+                            1e-6,
+                        ),
+                        0.0,
+                        1.0,
+                    )
+                )
+                if raw_desired_speed < self.desired_speed
+                else self.config.desired_speed_smoothing
+            )
             self.desired_speed += smoothing * (raw_desired_speed - self.desired_speed)
         self.desired_speed = float(
             np.clip(
@@ -475,6 +688,7 @@ __all__ = [
     "DrivingIntent",
     "LongitudinalConfig",
     "LongitudinalIntentPolicy",
+    "SpeedGuidance",
     "observed_lane_reading",
     "observed_passing_options",
 ]

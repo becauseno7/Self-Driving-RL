@@ -1829,7 +1829,10 @@ def evaluate_override(args: argparse.Namespace) -> None:
     )
     if args.longitudinal_intent:
         policy = LongitudinalIntentPolicy(policy)
-    env = NeonHighwayEnv(difficulty_mode=args.difficulty)
+    env = NeonHighwayEnv(
+        difficulty_mode=args.difficulty,
+        dynamic_traffic=args.dynamic_traffic,
+    )
     try:
         result = evaluate_in_env(
             env, policy, episodes=args.episodes, seed=args.seed
@@ -1857,6 +1860,7 @@ def watch_override(args: argparse.Namespace) -> None:
         difficulty_mode=args.difficulty,
         episode_seconds=args.seconds,
         endless=args.endless,
+        dynamic_traffic=args.dynamic_traffic,
     )
     try:
         run_policy(
@@ -2042,6 +2046,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use the V7 persistent speed-intent controller",
     )
+    evaluate_parser.add_argument(
+        "--dynamic-traffic",
+        action="store_true",
+        help="Allow safe, continuous lane changes by traffic cars",
+    )
     evaluate_parser.add_argument("--output", type=Path, default=None)
     evaluate_parser.set_defaults(handler=evaluate_override)
 
@@ -2062,6 +2071,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--longitudinal-intent",
         action="store_true",
         help="Use the V7 persistent speed-intent controller",
+    )
+    watch_parser.add_argument(
+        "--dynamic-traffic",
+        action="store_true",
+        help="Allow safe, continuous lane changes by traffic cars",
     )
     watch_parser.add_argument("--fps", type=int, default=60)
     watch_parser.add_argument("--speed", type=float, default=1.0)

@@ -338,6 +338,28 @@ to 3.63, missed passing opportunities from 0.71 to 0.41, and blocked time from
 for the preference rubric, failed experiments, training commands, and full
 evaluation.
 
+### V7.1 dynamic traffic and V8 human teaching
+
+V7.1 fixes the speed-matched slow-leader blind spot, keeps a persistent passing
+intent, and adds optional traffic cars that make safe continuous lane changes.
+The original 33-value observation is unchanged, and the frozen V6 weights
+generalize to the dynamic traffic without additional RL training.
+
+V8 adds a sparse human DAgger workflow. You correct lane judgment with the
+keyboard while the existing speed planner and safety shield remain in control:
+
+```powershell
+uv run sdr-dagger collect
+uv run sdr-dagger train
+uv run sdr-dagger evaluate --episodes 100
+uv run sdr-dagger watch --endless
+```
+
+Collection saves after every label, `ESC` exits safely, and silence is never
+treated as approval. See [docs/neon-highway-v8-dagger.md](docs/neon-highway-v8-dagger.md)
+for the controls, aggregation loop, training gates, and why speed is taught as
+persistent intent instead of raw pedal pulses.
+
 ## Collaboration style
 
 The code is split into small files with one job each. Before each major change,

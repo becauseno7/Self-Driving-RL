@@ -26,6 +26,12 @@ def test_evaluation_summary_has_expected_shape() -> None:
     assert summary.action_counts == {"1": int(summary.mean_episode_length * 2)}
     assert summary.mean_overtakes == 0.0
     assert summary.mean_net_overtakes == 0.0
+    assert summary.mean_episode_min_speed_kmh > 0.0
+    assert summary.worst_min_speed_kmh > 0.0
+    assert summary.hard_braking_steps_per_1000 >= 0.0
+    assert summary.full_braking_steps_per_1000 >= 0.0
+    assert summary.mean_brake_bout_seconds >= 0.0
+    assert 0.0 <= summary.clear_road_deep_slowdown_rate <= 1.0
 
 
 def test_format_duration_reads_naturally_at_every_scale() -> None:

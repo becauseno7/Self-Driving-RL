@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections import deque
 
 import numpy as np
 import pygame
@@ -28,14 +29,16 @@ class NeonRenderer:
     EGO_Y = 620
     PIXELS_PER_METER = 17.0
 
-    CYAN = (56, 223, 239)
-    PINK = (249, 74, 127)
-    GREEN = (75, 224, 157)
-    AMBER = (255, 181, 71)
-    RED = (255, 73, 99)
-    TEXT = (234, 241, 250)
-    MUTED = (124, 145, 172)
-    PANEL = (8, 16, 30)
+    # Low-saturation instrumentation keeps attention on traffic rather than
+    # making every metric compete like an arcade cabinet.
+    CYAN = (89, 190, 207)
+    PINK = (213, 105, 126)
+    GREEN = (104, 201, 158)
+    AMBER = (224, 178, 102)
+    RED = (224, 91, 108)
+    TEXT = (225, 233, 241)
+    MUTED = (132, 150, 169)
+    PANEL = (11, 20, 32)
 
     TRAFFIC_COLORS = [
         (245, 81, 111),
@@ -73,7 +76,11 @@ class NeonRenderer:
         self.font_speed = pygame.font.SysFont("Segoe UI", 58, bold=True)
         self.background = self._make_background()
         self.paused = False
-        self.show_sensors = True
+        self.show_sensors = False
+        # DAgger collection reads discrete key-down events from this queue.
+        # Keeping the queue in the renderer prevents held keys from generating
+        # dozens of duplicate labels at the simulation's 10 Hz control rate.
+        self.teacher_events: deque[str] = deque()
         self.last_crash_episode = -1
         # Fraction of the way through the current simulation step. The world
         # advances 0.1 s per step, so drawing one frame per step would run the
@@ -82,19 +89,19 @@ class NeonRenderer:
 
     def _make_background(self) -> pygame.Surface:
         surface = pygame.Surface((self.WIDTH, self.HEIGHT))
-        top = np.array([4, 8, 22], dtype=float)
-        bottom = np.array([9, 38, 44], dtype=float)
+        top = np.array([8, 14, 25], dtype=float)
+        bottom = np.array([15, 31, 38], dtype=float)
         for y in range(self.HEIGHT):
             ratio = y / self.HEIGHT
             color = tuple((top * (1 - ratio) + bottom * ratio).astype(int))
             pygame.draw.line(surface, color, (0, y), (self.WIDTH, y))
 
         rng = np.random.default_rng(42)
-        for _ in range(75):
+        for _ in range(28):
             x = int(rng.integers(0, self.WIDTH))
             y = int(rng.integers(0, 330))
             radius = int(rng.integers(1, 3))
-            pygame.draw.circle(surface, (51, 111, 135), (x, y), radius)
+            pygame.draw.circle(surface, (61, 91, 112), (x, y), radius)
 
         side_ranges = [
             (0, self.ROAD_LEFT - 26),
@@ -106,12 +113,16 @@ class NeonRenderer:
                 width = int(rng.integers(30, 78))
                 height = int(rng.integers(110, 390))
                 rect = pygame.Rect(x, self.HEIGHT - height, width, height)
-                pygame.draw.rect(surface, (6, 14, 29), rect, border_radius=4)
-                pygame.draw.line(surface, (15, 47, 65), rect.topleft, rect.topright, 2)
+                pygame.draw.rect(surface, (9, 18, 29), rect, border_radius=4)
+                pygame.draw.line(surface, (25, 45, 57), rect.topleft, rect.topright, 2)
                 for window_y in range(rect.top + 14, rect.bottom - 12, 23):
                     for window_x in range(rect.left + 8, rect.right - 6, 16):
-                        if rng.random() > 0.52:
-                            window_color = (31, 131, 143) if rng.random() > 0.18 else (180, 89, 125)
+                        if rng.random() > 0.70:
+                            window_color = (
+                                (48, 105, 113)
+                                if rng.random() > 0.16
+                                else (126, 82, 91)
+                            )
                             pygame.draw.rect(
                                 surface,
                                 window_color,
@@ -180,6 +191,8 @@ class NeonRenderer:
         self._draw_right_dashboard(env)
         self._draw_action_strip(env)
         self._draw_footer(env)
+        if env.hud_data.get("dagger_collecting", False):
+            self._draw_teacher_overlay(env)
 
         if env.crashed:
             self._draw_crash_overlay(env, crash_phase)
@@ -197,7 +210,27 @@ class NeonRenderer:
                     self.paused = not self.paused
                 if event.key == pygame.K_h:
                     self.show_sensors = not self.show_sensors
+                teacher_event = {
+                    pygame.K_LEFT: "left",
+                    pygame.K_a: "left",
+                    pygame.K_k: "keep",
+                    pygame.K_RIGHT: "right",
+                    pygame.K_d: "right",
+                    pygame.K_UP: "faster",
+                    pygame.K_w: "faster",
+                    pygame.K_DOWN: "slower",
+                    pygame.K_s: "slower",
+                    pygame.K_RETURN: "approve",
+                    pygame.K_BACKSPACE: "undo",
+                    pygame.K_u: "undo",
+                }.get(event.key)
+                if teacher_event is not None:
+                    self.teacher_events.append(teacher_event)
         return True
+
+    def pop_teacher_event(self) -> str | None:
+        """Return one deliberate DAgger label event, if the user supplied one."""
+        return self.teacher_events.popleft() if self.teacher_events else None
 
     def _wait_while_paused(self, env: NeonHighwayEnv) -> None:
         while self.human and self.paused:
@@ -343,7 +376,7 @@ class NeonRenderer:
             if -100 < y < self.HEIGHT + 100:
                 visible.append((y, car))
         for y, car in sorted(visible, key=lambda item: item[0]):
-            x = self._lane_center_x(env, float(car.lane))
+            x = self._lane_center_x(env, env.traffic_lateral_position(car))
             self._draw_car(
                 env,
                 x,
@@ -352,7 +385,11 @@ class NeonRenderer:
                 car.style,
                 agent=False,
                 braking=car.braking,
-                turn_direction=0,
+                turn_direction=(
+                    0
+                    if car.target_lane is None
+                    else (-1 if car.target_lane < car.lane else 1)
+                ),
             )
 
     def _draw_agent(self, env: NeonHighwayEnv) -> None:
@@ -580,9 +617,24 @@ class NeonRenderer:
         self._metric_pair("BEST", f"{best_return:+7.2f}", x + 22, y + 155)
 
         self._divider(x + 20, y + 193, width - 40)
-        self._section_title("LEARNING TREND", x + 22, y + 210, self.PINK)
-        graph_rect = pygame.Rect(x + 22, y + 244, width - 44, 112)
-        self._draw_sparkline(graph_rect, list(env.hud_data.get("recent_returns", [])))
+        recent_returns = list(env.hud_data.get("recent_returns", []))
+        training = int(env.hud_data.get("training_total", 0)) > 0
+        if training or recent_returns:
+            self._section_title("LEARNING TREND", x + 22, y + 210, self.PINK)
+            graph_rect = pygame.Rect(x + 22, y + 244, width - 44, 112)
+            self._draw_sparkline(graph_rect, recent_returns)
+        else:
+            self._section_title("DRIVE QUALITY", x + 22, y + 210, self.GREEN)
+            net_passes = env.overtakes - env.passed_by_traffic
+            avoidable_rate = env.avoidable_following_steps / max(env.step_count, 1)
+            self._metric_pair("NET PASSES", f"{net_passes:+d}", x + 22, y + 248)
+            self._metric_pair("LANE CHANGES", str(env.lane_changes), x + 22, y + 278)
+            self._metric_pair(
+                "AVOIDABLE FOLLOW", f"{avoidable_rate:.0%}", x + 22, y + 308
+            )
+            self._metric_pair(
+                "TRAFFIC MOVES", str(env.traffic_lane_changes), x + 22, y + 338
+            )
 
         self._divider(x + 20, y + 374, width - 40)
         self._section_title("OUTCOMES", x + 22, y + 390, self.GREEN)
@@ -634,21 +686,28 @@ class NeonRenderer:
         if driving_intent:
             self._metric_pair("INTENT", str(driving_intent), x + 22, y + 139)
             desired_speed = float(env.hud_data.get("desired_speed", env.target_speed))
-            reason = str(env.hud_data.get("speed_reason", "speed plan"))
+            braking_mode = str(env.hud_data.get("braking_mode", "COAST"))
+            braking_reason = str(env.hud_data.get("braking_reason", ""))
+            speed_reason = str(env.hud_data.get("speed_reason", "speed plan"))
+            reason = (
+                braking_reason
+                if braking_mode in {"COMFORT BRAKE", "EMERGENCY", "RECOVER"}
+                else speed_reason
+            )[:27]
             self._text(
-                f"PLAN {desired_speed * 3.6:.0f} km/h · {reason}",
+                f"{braking_mode} {desired_speed * 3.6:.0f} km/h | {reason}",
                 self.font_tiny,
                 self.MUTED,
                 x + 22,
-                y + 159,
+                y + 157,
             )
         else:
             self._metric_pair("ACTION", env._info()["action"], x + 22, y + 139)
-        self._pedal_bar("THROTTLE", env.throttle, x + 22, y + 174, 126, self.GREEN)
-        self._pedal_bar("BRAKE", env.brake, x + 164, y + 174, 126, self.RED)
+        self._pedal_bar("THROTTLE", env.throttle, x + 22, y + 184, 126, self.GREEN)
+        self._pedal_bar("BRAKE", env.brake, x + 164, y + 184, 126, self.RED)
 
-        self._divider(x + 20, y + 198, width - 40)
-        self._section_title("360 SAFETY RADAR", x + 22, y + 215, self.AMBER)
+        self._divider(x + 20, y + 208, width - 40)
+        self._section_title("360 SAFETY RADAR", x + 22, y + 225, self.AMBER)
         threat = env.current_threat()
         rear_threat = env.rear_threat()
         threat_color = (
@@ -658,21 +717,21 @@ class NeonRenderer:
             if threat["level"] > 0.3
             else self.GREEN
         )
-        self._gauge(x + 22, y + 250, width - 44, threat["level"], threat_color)
+        self._gauge(x + 22, y + 260, width - 44, threat["level"], threat_color)
         front_ttc = f"{threat['ttc']:.1f}s" if np.isfinite(threat["ttc"]) else "CLEAR"
         rear_ttc = (
             f"{rear_threat['ttc']:.1f}s" if np.isfinite(rear_threat["ttc"]) else "CLEAR"
         )
-        self._metric_pair("FRONT TTC", front_ttc, x + 22, y + 275)
-        self._metric_pair("REAR TTC", rear_ttc, x + 22, y + 301)
+        self._metric_pair("FRONT TTC", front_ttc, x + 22, y + 285)
+        self._metric_pair("REAR TTC", rear_ttc, x + 22, y + 311)
         challenge_count = f"{env.challenges_resolved}/{len(env.challenge_steps)}"
         challenge_label = challenge_count if env.difficulty_mode == "hard" else "STANDARD"
         if env.endless:
             challenge_label = f"{env.challenges_resolved} CLEARED"
-        self._metric_pair("CHALLENGES", challenge_label, x + 22, y + 327)
+        self._metric_pair("CHALLENGES", challenge_label, x + 22, y + 337)
 
-        self._divider(x + 20, y + 359, width - 40)
-        self._section_title("REWARD SIGNAL", x + 22, y + 375, self.PINK)
+        self._divider(x + 20, y + 369, width - 40)
+        self._section_title("REWARD SIGNAL", x + 22, y + 385, self.PINK)
         components = env.last_reward_components
         component_colors = [
             self.CYAN,
@@ -690,15 +749,35 @@ class NeonRenderer:
                 name.upper(),
                 float(components.get(name, 0.0)),
                 x + 22,
-                y + 400 + index * 17,
+                y + 410 + index * 17,
                 width - 44,
                 component_colors[index],
             )
 
-        self._divider(x + 20, y + 522, width - 40)
-        self._section_title("ACTION VALUES / Q", x + 22, y + 534, self.CYAN)
-        q_values = [float(value) for value in env.hud_data.get("q_values", [0.0] * ACTION_COUNT)]
-        self._draw_q_values(env, q_values, x + 22, y + 572, width - 44)
+        self._divider(x + 20, y + 532, width - 40)
+        q_values = [
+            float(value)
+            for value in env.hud_data.get("q_values", [0.0] * ACTION_COUNT)
+        ]
+        has_action_values = (
+            max(q_values, default=0.0) - min(q_values, default=0.0) > 1e-5
+        )
+        if has_action_values:
+            self._section_title("ACTION VALUES / Q", x + 22, y + 540, self.CYAN)
+            self._draw_q_values(env, q_values, x + 22, y + 578, width - 44)
+        else:
+            self._section_title("DECISION TRACE", x + 22, y + 540, self.CYAN)
+            learned = str(env.hud_data.get("raw_action", "FROZEN POLICY"))
+            residual = str(
+                env.hud_data.get(
+                    "dagger_decision",
+                    env.hud_data.get("preference_decision", "V6 BASE"),
+                )
+            )
+            shield = (str(env.hud_data.get("lane_veto_reason", "")) or "CLEAR").upper()
+            self._metric_pair("LEARNED", learned[:17], x + 22, y + 574)
+            self._metric_pair("RESIDUAL", residual[:17], x + 22, y + 598)
+            self._metric_pair("SAFETY SHIELD", shield[:17], x + 22, y + 622)
 
     def _draw_q_values(
         self,
@@ -761,37 +840,39 @@ class NeonRenderer:
                 )
 
     def _draw_action_strip(self, env: NeonHighwayEnv) -> None:
-        """Steering and pedal are chosen together, so each gets its own row."""
-        x, y, width = self.ROAD_LEFT + 25, self.HEIGHT - 66, self.ROAD_WIDTH - 50
-        self._glass_panel(pygame.Rect(x, y, width, 43), alpha=220, radius=15)
+        """Show stable intent prominently and the instantaneous command quietly."""
+        x, y, width = self.ROAD_LEFT + 25, self.HEIGHT - 70, self.ROAD_WIDTH - 50
+        self._glass_panel(pygame.Rect(x, y, width, 48), alpha=226, radius=15)
         steer, pedal = decode_action(env.last_action)
+        steer_name = ["LEFT", "KEEP", "RIGHT"][steer]
+        pedal_name = ["BRAKE", "COAST", "GAS"][pedal]
+        braking_mode = str(env.hud_data.get("braking_mode", pedal_name))
+        desired_speed = float(env.hud_data.get("desired_speed", env.target_speed)) * 3.6
+        intent = str(env.hud_data.get("driving_intent", "CRUISE"))
         groups = (
-            (["LEFT", "KEEP", "RIGHT"], steer, 0),
-            (["BRAKE", "COAST", "GAS"], pedal, 1),
+            ("LANE PLAN", steer_name, self.CYAN, x + 18),
+            ("DRIVING INTENT", intent, self.GREEN, x + 165),
+            (
+                "SPEED PLAN",
+                f"{desired_speed:.0f} km/h / {braking_mode}",
+                self.AMBER,
+                x + 330,
+            ),
         )
-        half = (width - 24) // 2
-        for labels, selected, column in groups:
-            button_width = half // 3
-            for index, label in enumerate(labels):
-                button_x = x + 8 + column * half + index * button_width
-                active = index == selected
-                color = self.CYAN if active else (57, 68, 85)
-                pygame.draw.rect(
-                    self.screen,
-                    color,
-                    (button_x, y + 8, button_width - 6, 27),
-                    border_radius=13,
-                )
-                text_color = (5, 21, 28) if active else (193, 204, 220)
-                surface = self.font_tiny.render(label, True, text_color)
-                self.screen.blit(
-                    surface,
-                    surface.get_rect(center=(button_x + (button_width - 6) // 2, y + 21)),
-                )
+        for label, value, color, group_x in groups:
+            self._text(label, self.font_tiny, self.MUTED, group_x, y + 7)
+            self._text(value, self.font_small_bold, color, group_x, y + 23)
 
     def _draw_footer(self, env: NeonHighwayEnv) -> None:
+        if env.hud_data.get("dagger_collecting", False):
+            controls = (
+                "A/D or LEFT/RIGHT  lane    K  keep    W/UP  faster    "
+                "S/DOWN  slower    ENTER  approve    U  undo"
+            )
+        else:
+            controls = "SPACE  pause       H  toggle sensors       ESC  save and exit"
         self._text(
-            "SPACE  pause       H  toggle sensors       ESC  save and exit",
+            controls,
             self.font_tiny,
             self.MUTED,
             22,
@@ -805,6 +886,33 @@ class NeonRenderer:
             1030,
             self.HEIGHT - 20,
         )
+
+    def _draw_teacher_overlay(self, env: NeonHighwayEnv) -> None:
+        """Small, readable teaching status without replacing the driving view."""
+        x, y, width, height = self.ROAD_LEFT + 24, 86, self.ROAD_WIDTH - 48, 86
+        self._glass_panel(pygame.Rect(x, y, width, height), alpha=232, radius=16)
+        self._section_title("HUMAN TEACHER / DAGGER", x + 16, y + 10, self.GREEN)
+        proposal = str(env.hud_data.get("dagger_proposal", "HOLD"))
+        last_label = str(env.hud_data.get("dagger_last_label", "waiting for your first label"))
+        labels = int(env.hud_data.get("dagger_labels", 0))
+        lane_corrections = int(env.hud_data.get("dagger_lane_corrections", 0))
+        speed_corrections = int(env.hud_data.get("dagger_speed_corrections", 0))
+        self._text(
+            f"DRIVER PROPOSES  {proposal}",
+            self.font_small_bold,
+            self.CYAN,
+            x + 17,
+            y + 37,
+        )
+        self._text(
+            f"{labels} labels  /  lane {lane_corrections}  /  speed {speed_corrections}",
+            self.font_tiny,
+            self.TEXT,
+            x + 17,
+            y + 61,
+        )
+        label_surface = self.font_tiny.render(last_label, True, self.MUTED)
+        self.screen.blit(label_surface, (x + width - label_surface.get_width() - 17, y + 61))
 
     def _draw_impact_particles(self, env: NeonHighwayEnv, phase: float) -> None:
         rng = np.random.default_rng(env.episode_index * 7919)

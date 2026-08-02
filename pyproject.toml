@@ -28,6 +28,7 @@ dev = [
 [project.scripts]
 sdr-game = "self_driving_rl.game:main"
 sdr-rlaif = "self_driving_rl.rlaif:main"
+sdr-dagger = "self_driving_rl.dagger:main"
 sdr-inspect = "self_driving_rl.inspect_environment:main"
 sdr-random = "self_driving_rl.random_baseline:main"
 sdr-train = "self_driving_rl.train:main"
