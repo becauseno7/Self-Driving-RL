@@ -1,368 +1,279 @@
 # Self-Driving RL
 
-A learning-focused reinforcement learning project in which an agent learns
-highway driving in simulation.
+**A simulator-only reinforcement-learning driver that learns to pass traffic,
+manage speed, and finish hard routes without sacrificing safety.**
 
-This is deliberately **not** an attempt to control a real vehicle. The first
-environment is small enough to understand and train on a normal computer while
-still containing useful driving decisions: lane changes, speed control,
-collision avoidance, and delayed consequences.
+<p align="center">
+  <img src="docs/assets/browser-demo.png" alt="Policy Roadbook browser replay showing the trained agent navigating four lanes of traffic" width="100%">
+</p>
 
-## First milestone
+<p align="center">
+  <a href="https://becauseno7.github.io/Self-Driving-RL/"><strong>Open the Policy Roadbook browser replay (deployment pending)</strong></a>
+</p>
+· [Five-minute setup](#five-minute-setup)
+· [Measured results](#measured-v10-result)
+· [How it works](#recommended-v10-driver)
+· [Learning guides](#learn-the-project)
 
-We use `highway-fast-v0` with:
+> [!IMPORTANT]
+> Self-Driving RL controls a small, custom Python simulator. It has not been
+> trained or validated for a real vehicle, a robotics platform, a public road,
+> or any safety-critical use.
 
-- a kinematics observation (positions and velocities of nearby cars),
-- five discrete actions (left, idle, right, faster, slower),
-- DQN, an algorithm that learns a value for each possible action,
-- fixed evaluation seeds and metrics so improvements are measurable.
+The v1.0 release candidate freezes a layered driver rather than presenting the
+latest experiment as automatically best. A validation-selected V5 QR-DQN
+checkpoint proposes joint steering/pedal actions, a V6 preference residual
+makes sparse confidence-gated corrections, and deterministic V7/V8 controller
+code supplies persistent speed intent, smooth braking, merge checks, and
+dynamic-traffic handling.
 
-The first experiment asks:
+## Measured v1.0 result
 
-> Does a trained DQN driver achieve a higher return and lower crash rate than
-> a random driver on the same 20 evaluation episodes?
+The recommended driver was evaluated on 100 previously unused, 45-second
+hard-mode routes with dynamic traffic, beginning at seed `690000`.
 
-Read [docs/rl-primer.md](docs/rl-primer.md) before changing the reward or model.
+| Metric | Result |
+|---|---:|
+| Routes completed | **100 / 100 (100%)** |
+| Crashes | **0 / 100 (0%)** |
+| Mean net passes per route | **8.43** |
+| Safe passing opportunities answered | **90.2%** |
+| Clear-road deep-slowdown steps | **0.04%** |
 
-## Setup
+These are measurements of one deterministic simulator configuration and seed
+range, not a real-world safety claim. The complete recorded output is packaged
+as `release/huggingface/evaluation/v8-braking-final-unseen-100.json`.
 
-Install [uv](https://docs.astral.sh/uv/) and run:
+## Five-minute setup
+
+Python 3.11 or 3.12 is required. You can run the simulator immediately; the
+recommended trained driver additionally needs the two pending model artifacts
+described in [Install the frozen models](#install-the-frozen-models).
+
+### Windows (PowerShell + `uv`)
 
 ```powershell
+git clone https://github.com/becauseno7/Self-Driving-RL.git
+Set-Location Self-Driving-RL
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 uv sync --extra dev
+uv run sdr-game random --episodes 1 --difficulty hard
 ```
 
-Inspect the environment and measure the random baseline:
+The repository's `uv` configuration selects PyTorch's CUDA 12.6 wheel for the
+original Windows/Linux training workstation. Inference still defaults to CPU;
+an NVIDIA GPU is not required to watch the driver.
+
+### Cross-platform (standard `venv` + `pip`)
+
+This path intentionally uses the platform wheel from PyPI instead of the
+workstation-specific `uv` CUDA index.
+
+```bash
+git clone https://github.com/becauseno7/Self-Driving-RL.git
+cd Self-Driving-RL
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+sdr-game random --episodes 1 --difficulty hard
+```
+
+On Windows `cmd.exe`, activate with `.venv\Scripts\activate.bat`. On Windows
+PowerShell, use `.venv\Scripts\Activate.ps1`.
+
+Run the development checks with either `uv run pytest` / `uv run ruff check .`
+or `python -m pytest` / `python -m ruff check .`.
+
+## Install the frozen models
+
+The model repository and release URLs have **not been published yet**. Do not
+paste the placeholders below into a script. After the user approves a model
+license and the artifacts are uploaded, replace all three pending values:
 
 ```powershell
-uv run sdr-inspect --seed 7
-uv run sdr-random --episodes 20
+$BaseModelUrl = "<PENDING_BASE_MODEL_DOWNLOAD_URL>"
+$OverrideModelUrl = "<PENDING_OVERRIDE_MODEL_DOWNLOAD_URL>"
+New-Item -ItemType Directory -Force models
+Invoke-WebRequest $BaseModelUrl -OutFile models\model.zip
+Invoke-WebRequest $OverrideModelUrl -OutFile models\override_model.pt
 ```
 
-Train the reference DQN (20,000 steps is the first meaningful run):
+Release builders can instead use the hash-verified local staging copies in
+`release/huggingface/`. Before loading either file, verify it:
 
 ```powershell
-uv run sdr-train --timesteps 20000 --seed 7
+Get-FileHash models\model.zip -Algorithm SHA256
+Get-FileHash models\override_model.pt -Algorithm SHA256
 ```
 
-The command prints the model path when it finishes. Evaluate it with:
-
-```powershell
-uv run sdr-evaluate runs\dqn\<run-name>\model.zip --episodes 20
-```
-
-Open training curves:
-
-```powershell
-uv run tensorboard --logdir runs
-```
-
-Run code quality checks:
-
-```powershell
-uv run pytest
-uv run ruff check .
-```
-
-## What gets saved
-
-Each training run creates a folder under `runs/dqn/` containing:
-
-- `config.json`: seed, environment, hyperparameters, and package versions,
-- `model.zip`: the learned Q-network,
-- `monitor.csv`: episode rewards and lengths during training,
-- `evaluation.json`: held-out evaluation metrics,
-- `tensorboard/`: learning curves.
-
-Generated runs are intentionally excluded from Git.
-
-## Learning roadmap
-
-1. **RL loop and baseline** — run a random policy and understand one transition.
-2. **Reference DQN** — train and evaluate a known implementation.
-3. **DQN from scratch** — implement epsilon-greedy exploration, replay memory,
-   Bellman targets, and a target network in PyTorch.
-4. **Experiment properly** — compare several seeds and inspect crashes rather
-   than trusting one average reward.
-5. **Harder driving** — tune observations/rewards, add continuous control, then
-   progress to image observations or a simulator such as CARLA.
-
-The project is configured for the CUDA 12.6 PyTorch build, which runs on the
-RTX 4070 with the installed NVIDIA driver. The small standard MLP may still be
-environment-bound; the high-compute preset uses a larger network and extra
-gradient updates so the GPU has more useful work to do.
-
-## Neon Highway game
-
-The project now includes a custom top-down 2D driving game with procedural car
-graphics, animated traffic, visible sensor rays, collision feedback, and a live
-learning HUD.
-
-Watch a driver with no training:
-
-```powershell
-uv run sdr-game random
-```
-
-Watch DQN learn from its crashes and save the result:
-
-```powershell
-uv run sdr-game learn --timesteps 30000
-```
-
-Run the larger GPU-oriented configuration headlessly:
-
-```powershell
-uv run sdr-game learn --preset high --device cuda --headless --timesteps 200000
-```
-
-Long runs validate periodically on a separate fixed seed set. The final
-`model.zip` is the safest checkpoint seen during training; `last_model.zip`
-is also kept so later-policy regression remains inspectable.
-
-Each 0.1 s simulation step is drawn as several interpolated frames rather
-than one, so motion is smooth instead of jumping 14 pixels per frame.
-
-`--speed` sets world seconds per real second. Pace and smoothness trade off
-against each other at a fixed refresh rate, because the simulation itself only
-ticks at 10 Hz:
-
-| `--speed` | Frames per step at 60 fps | Feel |
+| Artifact | Bytes | SHA-256 |
 |---|---:|---|
-| 1 | 6 | real time, very smooth, slow |
-| 2 (default) | 3 | brisk and smooth |
-| 3 | 2 | faster with less interpolation |
-| 6 | 1 | original pace, original choppiness |
+| `model.zip` | 3,594,202 | `5780BBEE5CE2009459F3AA796AA4982FBF33222DCC182883D31AFAA16C597039` |
+| `override_model.pt` | 35,439 | `06C3A0CEE04AAF6B8822781FE78F867F513A3019EBBF7FD8D91E10F117146BEC` |
 
-Raise `--fps` as well if your monitor runs above 60 Hz: frames per step is
-`round(fps * 0.1 / speed)`, so `--fps 120 --speed 3` gives four. `learn`
-defaults to `--speed 12`, which keeps rendered training exactly as fast as it
-was. Use `--headless` for maximum training speed. Press `Space` to pause, `H`
-to hide sensor rays, or `Esc` to stop safely and save the current model.
+Stable-Baselines3 model archives can contain cloudpickle data. Load only files
+you trust, and verify the published checksum first. The V6 override is loaded
+with PyTorch's weights-only mode, but its checksum should still be verified.
 
-Nothing is ever teleported where the player can see it. Traffic that needs to
-form a challenge changes its speed and closes the gap over a few seconds;
-vehicles are only repositioned off screen, and drive into frame from there.
+## Watch the recommended driver
 
-Watch the newest trained model without exploration:
-
-```powershell
-uv run sdr-game watch
-```
-
-Game runs are written to `runs/game/<run-name>/` with the random baseline,
-trained evaluation, model, configuration, monitor log, and TensorBoard data.
-
-### V1 systems
-
-The V1 game adds adaptive traffic following, escalating traffic pressure,
-time-to-collision safety shaping, decomposed rewards, route-completion bonuses,
-swept collision detection, impact classification, crash particles, live
-learning curves, and action Q-value displays.
-
-See [docs/neon-highway-v1.md](docs/neon-highway-v1.md) for a readable tour of
-the game logic and dashboard.
-
-### V2 speed control
-
-V2 adds a visible target speed and smooth cruise-control dynamics. `SPEED +`
-and `SPEED -` adjust the target by 3.6 km/h, while throttle and brake pressure
-move the actual car speed toward it. The dashboard shows both speeds,
-acceleration, and pedal pressure.
-
-This changes the observation from 15 to 16 values, so V2 requires a newly
-trained model. See [docs/neon-highway-v2.md](docs/neon-highway-v2.md).
-
-Watch the selected local V2 policy with:
-
-```powershell
-uv run sdr-game watch --model runs/game/v2-high-stable-200k/model.zip
-```
-
-The selected high-compute checkpoint completed 67% and 72% of two separate
-100-episode evaluation sets. The previous V2 model completed 57% and 55% on
-the same traffic seeds. Periodic validation selected the 125k-step checkpoint;
-training continued to 200k without overwriting that stronger policy.
-
-V2 is preserved in Git at commit `030120a`. V3 changes the observation shape,
-so V2 checkpoints are intentionally rejected by the current environment.
-
-### V3 360-degree hard mode
-
-V3 adds rear relative speed for every lane, raising the observation from 16 to
-20 values. The game draws rear sensor rays and reports rear time-to-collision.
-Hard mode presents three randomized, solvable traffic waves per episode: a slow
-leader, a fast-closing rear vehicle, a safe escape lane, and sometimes a nearby
-unsafe lane. A route only completes after all three waves are cleared, so a
-passive HOLD policy now completes 0% of hard episodes.
-
-The V3 model completed 56% and 55% of two separate 100-episode hard evaluation
-sets. See [docs/neon-highway-v3.md](docs/neon-highway-v3.md) for the observation
-layout and scenario design. Note that its impact-type breakdown was computed
-with the collision-reporting bug fixed in V4, so those counts are unreliable.
-
-### V4 corrected physics and a usable planning horizon
-
-V4 is mostly a correctness release. Five physics bugs meant V3 learned against a
-simulation that did not match its own sensors, and `gamma = 0.98` over 450-step
-episodes gave a five-second horizon in which route completion was worth 0.0006.
-
-- Traffic used to drive straight through traffic; it now follows the
-  Intelligent Driver Model with an explicit non-overlap constraint.
-- The middle frame of every lane change could not be hit by anything.
-- Collisions were attributed to the first car in a list, not the nearest.
-- Sensor gaps were centre-to-centre, so a reported 4.5 m gap was already a crash.
-- Recycled traffic could teleport back and forth between frames.
-- Collision detection now solves continuous overlap on both axes, so a
-  diagonal merge only crashes when the two physical bodies overlap at the
-  same instant—and cannot pass through between simulation frames.
-
-Steering and pedal are now chosen together (9 actions instead of 5), so the
-agent can brake and merge in one step — the manoeuvre the hard waves are built
-to require, and the one V3's action space forbade. The observation grows from 20
-to 33 values, adding the episode clock, wave state, and per-lane inverse
-time-to-collision.
-
-Train the V4 configuration:
-
-```powershell
-uv run sdr-game learn --preset gpu --algo qrdqn --headless --envs 8 --timesteps 2000000
-```
-
-`--algo qrdqn` is distributional and avoids the Q-value overestimation that left
-the V3 policy completing 62% of left-escape waves against 48% of right-escape
-ones. Training episodes are randomly mirrored, which is an exact symmetry of the
-environment, so both directions share one set of weights.
-
-Watch the trained V4 policy:
-
-```powershell
-uv run sdr-game watch --model runs/game/v4-qrdqn-2m/model.zip --difficulty hard
-```
-
-Score it headlessly on several independent seed sets, which is the only honest
-way to read the completion rate:
-
-```powershell
-uv run sdr-game evaluate --episodes 100 --seed 10000 20000 30000 50000 70000
-```
-
-### Route length
-
-`--seconds` sets the route length for `random`, `learn`, `evaluate`, and
-`watch`. The default is 45 s. A hard-mode wave stages every 15 s, so a longer
-route means more waves rather than the same three followed by empty road:
-
-```powershell
-uv run sdr-game watch --difficulty hard --seconds 120
-```
-
-Longer routes are strictly harder, because every extra wave is another chance
-to crash. The 2M-step model, which was trained on 45 s routes, scores this on
-seeds 30,000:
-
-| Route | Waves | Completion | Waves cleared |
-|---|---:|---:|---:|
-| 45 s (default) | 3 | 75% | 2.70 |
-| 120 s | 8 | 22% | 5.45 |
-
-Train on the length you intend to measure — pass the same `--seconds` to
-`learn` and the run will validate and evaluate at that length too.
-
-### Endless mode
-
-`--endless` removes the finish line entirely. It is one continuous drive, and
-the only thing that restarts it is a crash:
-
-```powershell
-uv run sdr-game watch --difficulty hard --endless
-```
-
-There is no route boundary and nothing resets mid-drive: the clock only counts
-up and waves keep arriving every 15 s, accumulating. A fixed-route checkpoint
-can be watched in this mode, but it was not optimized for continuous survival.
-Train with `--endless` when endless driving is the metric you want to improve;
-checkpoint selection then ranks policies by survival time.
-
-The header shows time survived, distance, and the longest run of the session.
-`CHALLENGES` shows waves cleared so far.
-
-Completion rate is meaningless here, since every endless run ends in a crash
-eventually, so `evaluate --endless` reports survival time:
-
-```powershell
-uv run sdr-game evaluate --endless --episodes 30 --seed 30000 50000
-```
-
-The bundled 2M-step checkpoint predates smooth wave formation and the V4.1
-continuous collision solver. Treat its endless score as a baseline for the
-next retraining run, not as the expected ceiling.
-
-### V5 good-driver objective
-
-V5 teaches the agent to move through traffic rather than merely wait for a
-forced escape. Real overtakes, being passed, safe passing opportunities,
-blocked time and lane-change efficiency are now first-class evaluation
-metrics. The reward values completed passes but gives no bonus for starting a
-lane change, so unnecessary weaving still loses comfort reward.
-
-The frozen V4 policy completes 70% of the 100-episode development set but
-averages 67 km/h, answers 43% of safe passing opportunities and makes only 2.2
-net passes per route. A safe hand-written driver reaches 99%, 81 km/h and 10.1
-net passes with fewer lane changes, showing that the desired behaviour is
-achievable. See [docs/neon-highway-v5.md](docs/neon-highway-v5.md) for the exact
-metrics, reward and reproducible training command.
-
-### V6 RLAIF good driver
-
-V6 learns driving preferences from AI-ranked, matched trajectories while
-keeping the proven V5 policy frozen underneath. A confidence-gated residual
-can take a clearly useful pass or suppress a pointless reversal; an independent
-safety shield rejects any proposal that fails the lane-gap, rear-TTC, threat,
-or pedal-consistency checks.
-
-Watch the calibrated driver:
+After placing the two artifacts under `models/`, this is the actual v1.0
+PowerShell command—not the plain QR-DQN viewer:
 
 ```powershell
 uv run sdr-rlaif watch `
-  --base-model runs/game/v5-good-driver-2p5m-restart/model.zip `
-  --override-model runs/rlaif/v6-good-driver/override_model.pt `
-  --difficulty hard --episodes 10
+  --base-model models/model.zip `
+  --override-model models/override_model.pt `
+  --longitudinal-intent --dynamic-traffic `
+  --difficulty hard --device cpu --episodes 10
 ```
 
-Add `--endless` to keep restarting only after crashes. On the untouched
-100-route seed range beginning at 130,000, V6 matched V5 at 98% completion and
-2% crashes while cutting lane changes from 16.93 to 8.94, reversals from 11.10
-to 3.63, missed passing opportunities from 0.71 to 0.41, and blocked time from
-10.55% to 5.08%. See [docs/neon-highway-v6-rlaif.md](docs/neon-highway-v6-rlaif.md)
-for the preference rubric, failed experiments, training commands, and full
-evaluation.
+The equivalent POSIX command is:
 
-### V7.1 dynamic traffic and V8 human teaching
+```bash
+sdr-rlaif watch \
+  --base-model models/model.zip \
+  --override-model models/override_model.pt \
+  --longitudinal-intent --dynamic-traffic \
+  --difficulty hard --device cpu --episodes 10
+```
 
-V7.1 fixes the speed-matched slow-leader blind spot, keeps a persistent passing
-intent, and adds optional traffic cars that make safe continuous lane changes.
-The original 33-value observation is unchanged, and the frozen V6 weights
-generalize to the dynamic traffic without additional RL training.
+Add `--endless` for one continuous drive that restarts only after a crash.
+Without the published weights, `sdr-game random` remains a complete visual
+smoke test, but it is not the trained driver.
 
-V8 adds a sparse human DAgger workflow. You correct lane judgment with the
-keyboard while the existing speed planner and safety shield remain in control:
+Reproduce the final evaluation after installing the models:
 
 ```powershell
-uv run sdr-dagger collect
-uv run sdr-dagger train
-uv run sdr-dagger evaluate --episodes 100
-uv run sdr-dagger watch --endless
+uv run sdr-rlaif override-evaluate `
+  --base-model models/model.zip `
+  --override-model models/override_model.pt `
+  --longitudinal-intent --dynamic-traffic `
+  --difficulty hard --device cpu `
+  --episodes 100 --seed 690000
 ```
 
-Collection saves after every label, `ESC` exits safely, and silence is never
-treated as approval. See [docs/neon-highway-v8-dagger.md](docs/neon-highway-v8-dagger.md)
-for the controls, aggregation loop, training gates, and why speed is taught as
-persistent intent instead of raw pedal pulses.
+## Recommended v1.0 driver
 
-## Collaboration style
+```mermaid
+flowchart LR
+    O["33-value simulator observation"] --> Q["V5 QR-DQN<br/>2.5M-step run, selected checkpoint"]
+    Q --> A["9 joint steering/pedal action scores"]
+    O --> R["V6 RLAIF residual"]
+    A --> R
+    R --> S["Confidence gate + merge safety shield"]
+    S --> C["V7/V8 deterministic controller<br/>persistent intent + smooth braking"]
+    C --> E["Neon Highway simulator<br/>hard mode + dynamic traffic"]
+    E --> O
+```
 
-The code is split into small files with one job each. Before each major change,
-we will identify the concept it teaches, the metric it should improve, and one
-piece for you to predict or modify. That keeps the project understandable while
-still letting the implementation move quickly.
+- **Observation:** 33 normalized values: nine ego/route values plus six
+  readings for each of four lanes.
+- **Action:** `Discrete(9)`, the Cartesian product of left/keep/right steering
+  and brake/coast/gas pedal intent.
+- **Learned base:** QR-DQN from `sb3-contrib`, trained for 2.5 million steps
+  with eight mirrored hard-mode environments; the validation-selected
+  `model.zip` is used, not the riskier final live checkpoint.
+- **Preference layer:** a small V6 residual trained from ranked matched
+  trajectories. Confidence thresholds and an independent safety shield limit
+  when it can replace the frozen base action.
+- **Deterministic layer:** V7/V8 controller code persists passing intent,
+  reacts to speed-matched slow leaders, meters target-speed changes, and
+  separates comfort braking from emergency braking.
+
+The action indices are:
+
+| | Brake | Coast | Gas |
+|---|---:|---:|---:|
+| Left | 0 | 1 | 2 |
+| Keep | 3 | 4 | 5 |
+| Right | 6 | 7 | 8 |
+
+### Why DAgger is not in the recommended driver
+
+V8 also introduced a human DAgger teaching workflow. The evaluated DAgger
+candidates failed their matched-seed promotion gates—one materially regressed
+net passing, while an earlier candidate also regressed braking and lane
+quality. They were **rejected** and are **not loaded by the recommended v1.0
+driver**. The final 100-route result above uses the frozen V5/V6 artifacts plus
+deterministic controller code only. DAgger remains a documented research path,
+not a release dependency.
+
+## Browser replay
+
+The browser experience is a deterministic replay exported from a trajectory
+produced by the real frozen Python policy. It is useful for inspecting a
+representative drive without installing Python, but it does **not** run PyTorch
+or make live policy decisions in the visitor's browser. The GitHub Pages URL is
+a placeholder until deployment is approved:
+[becauseno7.github.io/Self-Driving-RL](https://becauseno7.github.io/Self-Driving-RL/).
+
+To preview the exact static site locally before publication:
+
+```bash
+python -m http.server 8000 --directory web
+```
+
+Then open `http://127.0.0.1:8000`. No Python package or model download is
+needed for replay; the three exported routes and their provenance ship inside
+`web/data/`.
+
+## Learn the project
+
+The project is intentionally readable as a learning story. Start with the
+[RL primer](docs/rl-primer.md), then use the focused guides below rather than
+reverse-engineering the whole codebase:
+
+| Topic | Guide |
+|---|---|
+| Simulator, telemetry, and first learning loop | [V1](docs/neon-highway-v1.md) |
+| Target-speed control | [V2](docs/neon-highway-v2.md) |
+| Hard-mode scenario design and 360° sensing | [V3](docs/neon-highway-v3.md) |
+| Physics corrections, 33 observations, 9 actions, QR-DQN | [V4](docs/neon-highway-v4.md) |
+| Passing objective and 2.5M-step V5 run | [V5](docs/neon-highway-v5.md) |
+| Preference learning and the V6 guarded residual | [V6](docs/neon-highway-v6-rlaif.md) |
+| Human teaching, gates, and rejected DAgger candidates | [V8](docs/neon-highway-v8-dagger.md) |
+| Release artifact provenance and verification | [Release artifacts](docs/release-artifacts.md) |
+
+The arc matters: early policies exposed reward-horizon and simulator-physics
+bugs; later policies learned safe route completion but waited behind traffic;
+V5 made passing measurable; V6 reduced indecision; V7/V8 controller work fixed
+slow-leader and braking behavior. Failed fine-tunes and DAgger candidates are
+kept visible so model selection is evidence-led rather than chronological.
+
+## Training and experiment outputs
+
+Training writes generated data below `runs/`, which is intentionally ignored by
+Git. A game run includes its configuration, validation history, selected and
+last checkpoints, evaluation metrics, monitor log, and TensorBoard events.
+
+The reference V5 training command and full hyperparameters are recorded in the
+[V5 guide](docs/neon-highway-v5.md). V6 preference collection, reward fitting,
+residual training, calibration, and held-out comparison are in the
+[V6 guide](docs/neon-highway-v6-rlaif.md). Use fixed, previously unused seed
+ranges and report crashes alongside return—never select a driver from one
+rendered episode.
+
+## Limitations
+
+- Neon Highway is a simplified top-down kinematics simulator, not CARLA and
+  not a vehicle dynamics, perception, or robotics stack.
+- The policy consumes structured simulator state. It does not process camera,
+  lidar, GPS, maps, weather, pedestrians, signage, or hardware faults.
+- The final claim covers 100 deterministic hard/dynamic seeds and a 45-second
+  route. Longer routes, alternate distributions, and real traffic are outside
+  that evidence.
+- Dynamic traffic follows authored rules; other agents do not model the full
+  variety or adversarial behavior of human drivers.
+- Model artifacts must be treated as trusted executable-adjacent data because
+  the Stable-Baselines3 archive format uses cloudpickle.
+
+## Project policies
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and experiment
+expectations, [SECURITY.md](SECURITY.md) for private vulnerability reporting,
+and [CITATION.cff](CITATION.cff) for citation metadata.
+
+The public code/model license is still pending user approval. No permission
+should be inferred from the absence of a `LICENSE` file.

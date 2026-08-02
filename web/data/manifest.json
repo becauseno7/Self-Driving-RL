@@ -1,0 +1,134 @@
+{
+  "schema": "self-driving-rl/replay-manifest@1",
+  "replay_schema": "self-driving-rl/replay@1",
+  "provenance": {
+    "description": "Generated offline by the real frozen Python policy; deterministic playback, not live browser inference.",
+    "driver_stack": "Frozen v1.0 layered driver",
+    "generator": "tools/export_web_replays.py",
+    "source_commit": "10b9c67ba9cf7beb2345618376a2cc197bc9072c",
+    "models": {
+      "base": {
+        "path": "runs/game/v5-good-driver-2p5m-restart/model.zip",
+        "sha256": "5780BBEE5CE2009459F3AA796AA4982FBF33222DCC182883D31AFAA16C597039"
+      },
+      "override": {
+        "path": "runs/rlaif/v6-good-driver/override_model.pt",
+        "sha256": "06C3A0CEE04AAF6B8822781FE78F867F513A3019EBBF7FD8D91E10F117146BEC"
+      }
+    },
+    "configuration": {
+      "difficulty": "hard",
+      "dynamic_traffic": true,
+      "duration_seconds": 45.0,
+      "sample_hz": 10
+    }
+  },
+  "replays": [
+    {
+      "seed": 470000,
+      "file": "replay-470000.json",
+      "bytes": 338254,
+      "sha256": "7BBF8DB3B23B2D5EC1AD341797A3C4740E0B851C8EB77E5B7E6A8FA6A5FF47F5",
+      "frames": 451,
+      "final": {
+        "outcome": "completed",
+        "elapsed_seconds": 45.0,
+        "episode_return": 60.136,
+        "distance_km": 0.839,
+        "mean_speed_kmh": 67.2,
+        "overtakes": 7,
+        "passed_by_traffic": 4,
+        "net_overtakes": 3,
+        "lane_changes": 4,
+        "unsafe_lane_changes": 0,
+        "near_misses": 0,
+        "traffic_lane_changes": 6,
+        "traffic_cut_ins": 0,
+        "challenges_resolved": 3,
+        "challenges_presented": 3,
+        "minimum_ttc": 3.32,
+        "minimum_rear_ttc": 3.193,
+        "action_counts": {
+          "LEFT": 1,
+          "LEFT+GAS": 1,
+          "BRAKE": 23,
+          "HOLD": 408,
+          "GAS": 15,
+          "RIGHT": 2
+        },
+        "collision": null
+      }
+    },
+    {
+      "seed": 470001,
+      "file": "replay-470001.json",
+      "bytes": 336612,
+      "sha256": "9C6BD2B34FF514C974BC732E6BFA50A26979041020099DD592021BF9DDA37722",
+      "frames": 451,
+      "final": {
+        "outcome": "completed",
+        "elapsed_seconds": 45.0,
+        "episode_return": 65.662,
+        "distance_km": 0.89,
+        "mean_speed_kmh": 71.2,
+        "overtakes": 9,
+        "passed_by_traffic": 4,
+        "net_overtakes": 5,
+        "lane_changes": 4,
+        "unsafe_lane_changes": 0,
+        "near_misses": 0,
+        "traffic_lane_changes": 5,
+        "traffic_cut_ins": 1,
+        "challenges_resolved": 3,
+        "challenges_presented": 3,
+        "minimum_ttc": 1.795,
+        "minimum_rear_ttc": 2.229,
+        "action_counts": {
+          "LEFT": 1,
+          "LEFT+GAS": 1,
+          "BRAKE": 32,
+          "HOLD": 393,
+          "GAS": 21,
+          "RIGHT+GAS": 2
+        },
+        "collision": null
+      }
+    },
+    {
+      "seed": 470002,
+      "file": "replay-470002.json",
+      "bytes": 335511,
+      "sha256": "F46DA3D7258FFA1B26F2E430F88C6054C00E2E951006459D575C10AB1144E3AF",
+      "frames": 451,
+      "final": {
+        "outcome": "completed",
+        "elapsed_seconds": 45.0,
+        "episode_return": 64.707,
+        "distance_km": 0.905,
+        "mean_speed_kmh": 72.4,
+        "overtakes": 8,
+        "passed_by_traffic": 6,
+        "net_overtakes": 2,
+        "lane_changes": 6,
+        "unsafe_lane_changes": 0,
+        "near_misses": 0,
+        "traffic_lane_changes": 6,
+        "traffic_cut_ins": 2,
+        "challenges_resolved": 3,
+        "challenges_presented": 3,
+        "minimum_ttc": 1.747,
+        "minimum_rear_ttc": 2.46,
+        "action_counts": {
+          "LEFT+BRAKE": 1,
+          "LEFT+GAS": 2,
+          "BRAKE": 26,
+          "HOLD": 389,
+          "GAS": 29,
+          "RIGHT": 2,
+          "RIGHT+GAS": 1
+        },
+        "collision": null
+      }
+    }
+  ]
+}

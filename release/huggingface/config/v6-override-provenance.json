@@ -1,0 +1,28 @@
+{
+  "method": "confidence-gated residual preference distillation",
+  "base_model": "model.zip",
+  "preference_data": {
+    "matched_trajectories": 96,
+    "matched_comparisons": 160,
+    "individually_reviewed_ai_labels": 128,
+    "training_states_from_completed_trajectories": 54000,
+    "source": "data/rlaif/codex_preferences_v1.json"
+  },
+  "network": {
+    "simulator_observation_size": 33,
+    "temporal_context_features": 2,
+    "stored_observation_size": 35,
+    "action_count": 9
+  },
+  "thresholds": {
+    "calm": 0.8,
+    "passing": 0.5
+  },
+  "calibration": {
+    "method": "matched on-road development seeds; safety confirmed on held-out seeds",
+    "development_seed": 80000,
+    "heldout_seed": 130000
+  },
+  "preference_reward_model": "runs/rlaif/v1/reward_model_v2.json",
+  "provenance_note": "The reward model is not required for inference and is not included."
+}

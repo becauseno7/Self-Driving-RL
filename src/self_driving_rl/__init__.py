@@ -1,3 +1,3 @@
-"""Learning-focused reinforcement learning experiments for simulated driving."""
+"""Layered reinforcement-learning drivers for the Neon Highway simulator."""
 
-__version__ = "0.5.0"
+__version__ = "1.0.0"

@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use Self-Driving RL in teaching or research, please cite this software."
+title: "Self-Driving RL"
+type: software
+version: 1.0.0
+authors:
+  - family-names: Basak
+    given-names: Shuvra
+repository-code: "https://github.com/becauseno7/Self-Driving-RL"
+url: "https://github.com/becauseno7/Self-Driving-RL"
+abstract: >-
+  A learning-focused reinforcement-learning project for a custom simulated
+  highway-driving task, combining a frozen QR-DQN policy, a confidence-gated
+  preference residual, and deterministic safety and speed-control layers.
+keywords:
+  - reinforcement learning
+  - simulated driving
+  - QR-DQN
+  - RLAIF
+  - Gymnasium

@@ -1,8 +1,7 @@
-"""High-fidelity procedural Pygame visuals for the Neon Highway RL lab."""
+"""Calm, information-dense Pygame visuals for the autonomous-driving lab."""
 
 from __future__ import annotations
 
-import math
 from collections import deque
 
 import numpy as np
@@ -19,117 +18,105 @@ from self_driving_rl.metrics import format_duration
 
 
 class NeonRenderer:
+    """Render a logical 16:9 driving canvas and scale it to the viewer window."""
+
     WIDTH = 1440
     HEIGHT = 810
-    # A narrower road and closer longitudinal camera keep one physical scale
-    # for cars on both axes. The previous 720 px / 6.4 px-per-metre view turned
-    # a real 4.6 m x 1.9 m car into a 92 x 29 px horizontal bar.
-    ROAD_WIDTH = 520
+    ROAD_WIDTH = 792  # Exactly 55% of the logical viewport.
     ROAD_LEFT = (WIDTH - ROAD_WIDTH) // 2
     EGO_Y = 620
-    PIXELS_PER_METER = 17.0
+    PIXELS_PER_METER = 22.5
+    MIN_FUNCTIONAL_FONT_PX = 16
+    DEFAULT_FUNCTIONAL_LABELS = (
+        "Speed",
+        "Target",
+        "Lane",
+        "Intent",
+        "Inputs",
+        "Throttle",
+        "Brake",
+        "Progress",
+        "Safety",
+        "Front TTC",
+        "Rear TTC",
+        "Net passes",
+    )
 
-    # Low-saturation instrumentation keeps attention on traffic rather than
-    # making every metric compete like an arcade cabinet.
-    CYAN = (89, 190, 207)
-    PINK = (213, 105, 126)
-    GREEN = (104, 201, 158)
-    AMBER = (224, 178, 102)
-    RED = (224, 91, 108)
-    TEXT = (225, 233, 241)
-    MUTED = (132, 150, 169)
-    PANEL = (11, 20, 32)
+    CANVAS = (10, 15, 20)
+    PANEL = (17, 24, 32)
+    PANEL_RAISED = (21, 30, 39)
+    ROAD = (37, 43, 49)
+    DIVIDER = (42, 53, 64)
+    TEXT = (237, 242, 245)
+    MUTED = (155, 168, 178)
+    ACCENT = (112, 169, 190)
+    SUCCESS = (112, 177, 139)
+    WARNING = (211, 161, 86)
+    DANGER = (212, 103, 112)
+
+    # Compatibility aliases for small external renderer extensions.
+    CYAN = ACCENT
+    GREEN = SUCCESS
+    AMBER = WARNING
+    RED = DANGER
 
     TRAFFIC_COLORS = [
-        (245, 81, 111),
-        (255, 177, 66),
-        (119, 221, 154),
-        (123, 145, 255),
-        (198, 125, 255),
-        (238, 238, 243),
-        (50, 188, 210),
-        (242, 115, 70),
+        (111, 124, 132),
+        (125, 116, 100),
+        (91, 111, 113),
+        (101, 113, 130),
+        (125, 124, 119),
+        (87, 99, 108),
+        (104, 119, 102),
+        (126, 105, 99),
     ]
+
+    LEFT_PANEL = pygame.Rect(16, 16, 292, 778)
+    RIGHT_PANEL = pygame.Rect(1132, 16, 292, 778)
 
     def __init__(self, *, human: bool, fps: int, speed: float = 1.0) -> None:
         pygame.init()
         pygame.font.init()
         self.human = human
         self.fps = fps
-        # World seconds per real second. 1.0 plays back as a simulation;
-        # training wants fast-forward, which costs interpolated frames.
         self.speed = max(speed, 1e-6)
         self.clock = pygame.time.Clock()
-        self.screen = (
-            pygame.display.set_mode((self.WIDTH, self.HEIGHT))
-            if human
-            else pygame.Surface((self.WIDTH, self.HEIGHT))
-        )
+        self.screen = pygame.Surface((self.WIDTH, self.HEIGHT))
+        self.display_surface: pygame.Surface | None = None
         if human:
-            pygame.display.set_caption("Neon Highway - RL Learning Lab")
+            self.display_surface = pygame.display.set_mode(
+                (self.WIDTH, self.HEIGHT), pygame.RESIZABLE
+            )
+            pygame.display.set_caption("Autonomy Lab — Night Drive")
 
-        self.font_tiny = pygame.font.SysFont("Segoe UI", 13)
-        self.font_small = pygame.font.SysFont("Segoe UI", 15)
-        self.font_small_bold = pygame.font.SysFont("Segoe UI", 15, bold=True)
-        self.font_medium = pygame.font.SysFont("Segoe UI", 20, bold=True)
-        self.font_large = pygame.font.SysFont("Segoe UI", 36, bold=True)
-        self.font_speed = pygame.font.SysFont("Segoe UI", 58, bold=True)
+        # Fourteen pixels is the floor for functional text in the logical view.
+        self.font_tiny = pygame.font.SysFont("Segoe UI", self.MIN_FUNCTIONAL_FONT_PX)
+        self.font_small = pygame.font.SysFont("Segoe UI", 17)
+        self.font_small_bold = pygame.font.SysFont("Segoe UI", 17, bold=True)
+        self.font_medium = pygame.font.SysFont("Segoe UI", 22, bold=True)
+        self.font_large = pygame.font.SysFont("Segoe UI", 30, bold=True)
+        self.font_speed = pygame.font.SysFont("Segoe UI", 54, bold=True)
         self.background = self._make_background()
         self.paused = False
         self.show_sensors = False
-        # DAgger collection reads discrete key-down events from this queue.
-        # Keeping the queue in the renderer prevents held keys from generating
-        # dozens of duplicate labels at the simulation's 10 Hz control rate.
+        self.analysis_open = False
         self.teacher_events: deque[str] = deque()
         self.last_crash_episode = -1
-        # Fraction of the way through the current simulation step. The world
-        # advances 0.1 s per step, so drawing one frame per step would run the
-        # simulation at six times real time in 14-pixel jumps.
         self.alpha = 1.0
 
     def _make_background(self) -> pygame.Surface:
+        """Build a quiet cockpit surround without decorative city noise."""
         surface = pygame.Surface((self.WIDTH, self.HEIGHT))
-        top = np.array([8, 14, 25], dtype=float)
-        bottom = np.array([15, 31, 38], dtype=float)
+        surface.fill(self.CANVAS)
         for y in range(self.HEIGHT):
-            ratio = y / self.HEIGHT
-            color = tuple((top * (1 - ratio) + bottom * ratio).astype(int))
-            pygame.draw.line(surface, color, (0, y), (self.WIDTH, y))
-
-        rng = np.random.default_rng(42)
-        for _ in range(28):
-            x = int(rng.integers(0, self.WIDTH))
-            y = int(rng.integers(0, 330))
-            radius = int(rng.integers(1, 3))
-            pygame.draw.circle(surface, (61, 91, 112), (x, y), radius)
-
-        side_ranges = [
-            (0, self.ROAD_LEFT - 26),
-            (self.ROAD_LEFT + self.ROAD_WIDTH + 26, self.WIDTH),
-        ]
-        for side_left, side_right in side_ranges:
-            x = side_left + 8
-            while x < side_right - 16:
-                width = int(rng.integers(30, 78))
-                height = int(rng.integers(110, 390))
-                rect = pygame.Rect(x, self.HEIGHT - height, width, height)
-                pygame.draw.rect(surface, (9, 18, 29), rect, border_radius=4)
-                pygame.draw.line(surface, (25, 45, 57), rect.topleft, rect.topright, 2)
-                for window_y in range(rect.top + 14, rect.bottom - 12, 23):
-                    for window_x in range(rect.left + 8, rect.right - 6, 16):
-                        if rng.random() > 0.70:
-                            window_color = (
-                                (48, 105, 113)
-                                if rng.random() > 0.16
-                                else (126, 82, 91)
-                            )
-                            pygame.draw.rect(
-                                surface,
-                                window_color,
-                                (window_x, window_y, 6, 8),
-                                border_radius=1,
-                            )
-                x += width + int(rng.integers(7, 18))
+            shade = int(5 * y / self.HEIGHT)
+            pygame.draw.line(
+                surface,
+                (self.CANVAS[0] + shade, self.CANVAS[1] + shade, self.CANVAS[2] + shade),
+                (0, y),
+                (self.WIDTH, y),
+            )
+        pygame.draw.rect(surface, (8, 12, 16), (0, 0, self.WIDTH, 8))
         return surface
 
     def draw(self, env: NeonHighwayEnv) -> tuple[np.ndarray | None, bool]:
@@ -141,25 +128,24 @@ class NeonRenderer:
 
         new_crash = env.crashed and self.last_crash_episode != env.episode_index
         if self.human and new_crash:
-            for frame_index in range(18):
+            for frame_index in range(12):
                 if not self._handle_events():
                     return None, False
-                self._render_frame(env, crash_phase=(frame_index + 1) / 18)
-                pygame.display.flip()
+                self._render_frame(env, crash_phase=(frame_index + 1) / 12)
+                self._present()
                 self.clock.tick(60)
             self.last_crash_episode = env.episode_index
         elif self.human:
-            # One simulation step covers env.DT of world time. Drawing it as a
-            # single frame would play the world back at DT * fps times real
-            # speed, so the step is split into interpolated frames instead.
-            for frame_index in range(self._frames_per_step(env)):
+            frames = self._frames_per_step(env)
+            for frame_index in range(frames):
                 if frame_index and not self._handle_events():
                     return None, False
-                alpha = (frame_index + 1) / self._frames_per_step(env)
                 self._render_frame(
-                    env, crash_phase=1.0 if env.crashed else 0.0, alpha=alpha
+                    env,
+                    crash_phase=1.0 if env.crashed else 0.0,
+                    alpha=(frame_index + 1) / frames,
                 )
-                pygame.display.flip()
+                self._present()
                 if self.fps > 0:
                     self.clock.tick(self.fps)
         else:
@@ -169,7 +155,7 @@ class NeonRenderer:
         return frame, True
 
     def _frames_per_step(self, env: NeonHighwayEnv) -> int:
-        """Frames per simulation step needed to hit the requested playback speed."""
+        """Frames per simulation step needed for the requested playback speed."""
         if self.fps <= 0:
             return 1
         return max(1, round(self.fps * env.DT / self.speed))
@@ -184,16 +170,15 @@ class NeonRenderer:
             self._draw_sensors(env)
         self._draw_traffic(env)
         self._draw_agent(env)
-        if env.crashed:
-            self._draw_impact_particles(env, crash_phase)
-        self._draw_header(env)
-        self._draw_left_dashboard(env)
-        self._draw_right_dashboard(env)
-        self._draw_action_strip(env)
-        self._draw_footer(env)
-        if env.hud_data.get("dagger_collecting", False):
-            self._draw_teacher_overlay(env)
 
+        self._draw_panel_shells()
+        if self.analysis_open:
+            self._draw_analysis_view(env)
+        else:
+            self._draw_drive_view(env)
+
+        if env.hud_data.get("dagger_collecting", False):
+            self._draw_teacher_status(env)
         if env.crashed:
             self._draw_crash_overlay(env, crash_phase)
         elif env.completed:
@@ -203,6 +188,12 @@ class NeonRenderer:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return False
+            if event.type == pygame.VIDEORESIZE and self.human:
+                width = max(640, int(event.w))
+                height = max(360, int(event.h))
+                self.display_surface = pygame.display.set_mode(
+                    (width, height), pygame.RESIZABLE
+                )
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     return False
@@ -210,6 +201,8 @@ class NeonRenderer:
                     self.paused = not self.paused
                 if event.key == pygame.K_h:
                     self.show_sensors = not self.show_sensors
+                if event.key == pygame.K_TAB:
+                    self.analysis_open = not self.analysis_open
                 teacher_event = {
                     pygame.K_LEFT: "left",
                     pygame.K_a: "left",
@@ -228,8 +221,35 @@ class NeonRenderer:
                     self.teacher_events.append(teacher_event)
         return True
 
+    @classmethod
+    def _letterbox_rect(cls, viewport: tuple[int, int]) -> pygame.Rect:
+        """Return the largest centered 16:9 logical canvas inside a viewport."""
+        viewport_width, viewport_height = viewport
+        scale = min(viewport_width / cls.WIDTH, viewport_height / cls.HEIGHT)
+        width = max(1, round(cls.WIDTH * scale))
+        height = max(1, round(cls.HEIGHT * scale))
+        return pygame.Rect(
+            (viewport_width - width) // 2,
+            (viewport_height - height) // 2,
+            width,
+            height,
+        )
+
+    def _present(self) -> None:
+        if self.display_surface is None:
+            return
+        viewport = self.display_surface.get_size()
+        target = self._letterbox_rect(viewport)
+        self.display_surface.fill((4, 7, 9))
+        if target.size == (self.WIDTH, self.HEIGHT):
+            scaled = self.screen
+        else:
+            scaled = pygame.transform.smoothscale(self.screen, target.size)
+        self.display_surface.blit(scaled, target.topleft)
+        pygame.display.flip()
+
     def pop_teacher_event(self) -> str | None:
-        """Return one deliberate DAgger label event, if the user supplied one."""
+        """Return one deliberate DAgger label event, if supplied."""
         return self.teacher_events.popleft() if self.teacher_events else None
 
     def _wait_while_paused(self, env: NeonHighwayEnv) -> None:
@@ -238,67 +258,101 @@ class NeonRenderer:
                 env.quit_requested = True
                 self.paused = False
                 return
-            self._glass_panel(pygame.Rect(530, 310, 380, 150), alpha=238)
-            self._center_text("SIMULATION PAUSED", self.font_large, self.CYAN, 350)
-            self._center_text("Press SPACE to continue", self.font_small, self.MUTED, 410)
-            pygame.display.flip()
+            self._render_frame(env, crash_phase=1.0 if env.crashed else 0.0)
+            self._side_status(
+                self.RIGHT_PANEL.inflate(-24, -500),
+                "Simulation paused",
+                "Space to continue",
+                self.ACCENT,
+            )
+            self._present()
             self.clock.tick(30)
 
     def _draw_road(self, env: NeonHighwayEnv) -> None:
-        shadow = pygame.Rect(self.ROAD_LEFT - 22, 0, self.ROAD_WIDTH + 44, self.HEIGHT)
-        pygame.draw.rect(self.screen, (2, 6, 12), shadow)
-        pygame.draw.rect(
-            self.screen,
-            (25, 29, 37),
-            (self.ROAD_LEFT, 0, self.ROAD_WIDTH, self.HEIGHT),
-        )
+        road_rect = pygame.Rect(self.ROAD_LEFT, 0, self.ROAD_WIDTH, self.HEIGHT)
+        pygame.draw.rect(self.screen, (5, 8, 11), road_rect.inflate(14, 0))
+        pygame.draw.rect(self.screen, self.ROAD, road_rect)
 
         lane_width = self.ROAD_WIDTH / env.LANES
-        target_x = int(self.ROAD_LEFT + env.target_lane * lane_width)
-        target_overlay = pygame.Surface((int(lane_width), self.HEIGHT), pygame.SRCALPHA)
-        target_overlay.fill((46, 211, 230, 10))
-        self.screen.blit(target_overlay, (target_x, 0))
+        target_left = int(self.ROAD_LEFT + env.target_lane * lane_width)
+        target_layer = pygame.Surface((int(lane_width), self.HEIGHT), pygame.SRCALPHA)
+        target_layer.fill((*self.ACCENT, 10))
+        self.screen.blit(target_layer, (target_left, 0))
 
-        shoulder = 14
-        pygame.draw.rect(self.screen, (43, 51, 62), (self.ROAD_LEFT, 0, shoulder, self.HEIGHT))
+        shoulder = 17
         pygame.draw.rect(
             self.screen,
-            (43, 51, 62),
+            (30, 37, 43),
+            (self.ROAD_LEFT, 0, shoulder, self.HEIGHT),
+        )
+        pygame.draw.rect(
+            self.screen,
+            (30, 37, 43),
             (self.ROAD_LEFT + self.ROAD_WIDTH - shoulder, 0, shoulder, self.HEIGHT),
         )
+        edge = (104, 116, 124)
         pygame.draw.line(
             self.screen,
-            self.CYAN,
+            edge,
             (self.ROAD_LEFT + shoulder, 0),
             (self.ROAD_LEFT + shoulder, self.HEIGHT),
             2,
         )
         pygame.draw.line(
             self.screen,
-            self.PINK,
-            (self.ROAD_LEFT + self.ROAD_WIDTH - shoulder - 1, 0),
-            (self.ROAD_LEFT + self.ROAD_WIDTH - shoulder - 1, self.HEIGHT),
+            edge,
+            (self.ROAD_LEFT + self.ROAD_WIDTH - shoulder, 0),
+            (self.ROAD_LEFT + self.ROAD_WIDTH - shoulder, self.HEIGHT),
             2,
         )
 
-        offset = int((self.ego_position(env) * self.PIXELS_PER_METER) % 62)
+        offset = int((self.ego_position(env) * self.PIXELS_PER_METER) % 72)
         for lane in range(1, env.LANES):
-            x = int(self.ROAD_LEFT + lane * lane_width)
-            for y in range(-62 + offset, self.HEIGHT, 62):
-                pygame.draw.line(self.screen, (88, 97, 112), (x, y), (x, y + 30), 3)
-                pygame.draw.line(self.screen, (39, 44, 53), (x + 3, y), (x + 3, y + 30), 1)
+            x = round(self.ROAD_LEFT + lane * lane_width)
+            for y in range(-72 + offset, self.HEIGHT, 72):
+                pygame.draw.line(self.screen, (108, 119, 126), (x, y), (x, y + 34), 3)
 
-        for side in (-1, 1):
-            x = self.ROAD_LEFT + (21 if side == -1 else self.ROAD_WIDTH - 21)
-            color = self.CYAN if side == -1 else self.PINK
-            for y in range(-40 + offset, self.HEIGHT, 62):
-                pygame.draw.circle(self.screen, color, (x, y), 2)
+        for y in range(-90 + offset, self.HEIGHT, 90):
+            pygame.draw.line(
+                self.screen,
+                (45, 53, 59),
+                (self.ROAD_LEFT + 5, y),
+                (self.ROAD_LEFT + 12, y + 24),
+                2,
+            )
+            pygame.draw.line(
+                self.screen,
+                (45, 53, 59),
+                (self.ROAD_LEFT + self.ROAD_WIDTH - 6, y),
+                (self.ROAD_LEFT + self.ROAD_WIDTH - 13, y + 24),
+                2,
+            )
 
-        marker_offset = int((self.ego_position(env) * self.PIXELS_PER_METER) % 180)
-        for y in range(-180 + marker_offset, self.HEIGHT, 180):
-            ahead = (self.EGO_Y - y) / self.PIXELS_PER_METER
-            marker = f"{int((self.ego_position(env) + ahead) // 100):02d}"
-            self._text(marker, self.font_tiny, (67, 76, 90), self.ROAD_LEFT + 28, y)
+        self._draw_merge_path(env)
+
+    def _draw_merge_path(self, env: NeonHighwayEnv) -> None:
+        """Draw a restrained route guide from the ego car to the target lane."""
+        layer = pygame.Surface((self.WIDTH, self.HEIGHT), pygame.SRCALPHA)
+        start_x = self._lane_center_x(env, self.ego_lane(env))
+        end_x = self._lane_center_x(env, float(env.target_lane))
+        start_y, end_y = self.EGO_Y + 56, 118
+        points: list[tuple[int, int]] = []
+        for index in range(43):
+            t = index / 42
+            eased = t * t * (3.0 - 2.0 * t)
+            x = start_x + (end_x - start_x) * eased
+            y = start_y + (end_y - start_y) * t
+            points.append((round(x), round(y)))
+        for index in range(0, len(points) - 2, 4):
+            pygame.draw.aaline(layer, (*self.ACCENT, 112), points[index], points[index + 2])
+        pygame.draw.line(
+            layer,
+            (*self.ACCENT, 135),
+            (round(end_x - 26), end_y),
+            (round(end_x + 26), end_y),
+            3,
+        )
+        self.screen.blit(layer, (0, 0))
 
     def _lane_center_x(self, env: NeonHighwayEnv, lane_position: float) -> float:
         lane_width = self.ROAD_WIDTH / env.LANES
@@ -320,60 +374,39 @@ class NeonRenderer:
         return self.EGO_Y - (world_position - self.ego_position(env)) * self.PIXELS_PER_METER
 
     def _draw_sensors(self, env: NeonHighwayEnv) -> None:
+        """Show low-contrast range geometry without placing labels over traffic."""
         overlay = pygame.Surface((self.WIDTH, self.HEIGHT), pygame.SRCALPHA)
-        ego_x = int(self._lane_center_x(env, self.ego_lane(env)))
-        # Rays leave the actual bumpers, which moved when the sprite was
-        # resized to the car's real footprint.
+        ego_x = round(self._lane_center_x(env, self.ego_lane(env)))
         half_length = self.car_footprint(env)[1] / 2.0
-        front_origin = (ego_x, int(self.EGO_Y - half_length))
-        rear_origin = (ego_x, int(self.EGO_Y + half_length))
+        front_origin = (ego_x, round(self.EGO_Y - half_length))
+        rear_origin = (ego_x, round(self.EGO_Y + half_length))
         for lane, (ahead_gap, relative_speed, behind_gap, behind_relative) in enumerate(
             env.lane_sensors()
         ):
-            lane_x = int(self._lane_center_x(env, float(lane)))
-            end_y = max(84, int(self.EGO_Y - ahead_gap * self.PIXELS_PER_METER))
-            end = (lane_x, end_y)
+            lane_x = round(self._lane_center_x(env, float(lane)))
+            front_y = max(20, round(self.EGO_Y - ahead_gap * self.PIXELS_PER_METER))
             closing = max(-relative_speed, 0.0)
-            ttc = ahead_gap / closing if closing > 0.1 else float("inf")
-            if ttc < 2.0:
-                color = (*self.RED, 150)
-            elif ttc < 4.0:
-                color = (*self.AMBER, 105)
-            else:
-                color = (*self.CYAN, 52)
-            pygame.draw.aaline(overlay, color, front_origin, end)
-            pygame.draw.circle(overlay, color, end, 8, 2)
-            label = self.font_tiny.render(f"{ahead_gap:02.0f}m", True, color[:3])
-            overlay.blit(label, (end[0] + 10, end[1] - 8))
+            front_ttc = ahead_gap / closing if closing > 0.1 else float("inf")
+            front_color = self._risk_color(front_ttc)
+            pygame.draw.aaline(overlay, (*front_color, 66), front_origin, (lane_x, front_y))
+            pygame.draw.circle(overlay, (*front_color, 115), (lane_x, front_y), 6, 2)
 
-            rear_end_y = min(
-                self.HEIGHT - 30,
-                int(self.EGO_Y + behind_gap * self.PIXELS_PER_METER),
+            rear_y = min(
+                self.HEIGHT - 20,
+                round(self.EGO_Y + behind_gap * self.PIXELS_PER_METER),
             )
-            rear_end = (lane_x, rear_end_y)
             rear_closing = max(behind_relative, 0.0)
             rear_ttc = behind_gap / rear_closing if rear_closing > 0.1 else float("inf")
-            if rear_ttc < 2.0:
-                rear_color = (*self.RED, 150)
-            elif rear_ttc < 4.0:
-                rear_color = (*self.AMBER, 105)
-            else:
-                rear_color = (*self.PINK, 52)
-            pygame.draw.aaline(overlay, rear_color, rear_origin, rear_end)
-            pygame.draw.circle(overlay, rear_color, rear_end, 8, 2)
-            rear_label = self.font_tiny.render(
-                f"{behind_gap:02.0f}m",
-                True,
-                rear_color[:3],
-            )
-            overlay.blit(rear_label, (rear_end[0] + 10, rear_end[1] - 8))
+            rear_color = self._risk_color(rear_ttc)
+            pygame.draw.aaline(overlay, (*rear_color, 54), rear_origin, (lane_x, rear_y))
+            pygame.draw.circle(overlay, (*rear_color, 100), (lane_x, rear_y), 6, 2)
         self.screen.blit(overlay, (0, 0))
 
     def _draw_traffic(self, env: NeonHighwayEnv) -> None:
-        visible = []
+        visible: list[tuple[float, TrafficCar]] = []
         for car in env.traffic:
             y = self._screen_y(env, self.car_position(car))
-            if -100 < y < self.HEIGHT + 100:
+            if -140 < y < self.HEIGHT + 140:
                 visible.append((y, car))
         for y, car in sorted(visible, key=lambda item: item[0]):
             x = self._lane_center_x(env, env.traffic_lateral_position(car))
@@ -381,7 +414,7 @@ class NeonRenderer:
                 env,
                 x,
                 y,
-                self.TRAFFIC_COLORS[car.color_index],
+                self.TRAFFIC_COLORS[car.color_index % len(self.TRAFFIC_COLORS)],
                 car.style,
                 agent=False,
                 braking=car.braking,
@@ -394,49 +427,20 @@ class NeonRenderer:
 
     def _draw_agent(self, env: NeonHighwayEnv) -> None:
         x = self._lane_center_x(env, self.ego_lane(env))
-        threat = env.current_threat()["level"]
-        pulse = int(22 + 12 * math.sin(env.step_count * 0.18))
-        glow_color = self.RED if threat > 0.65 else self.CYAN
-        car_width, car_length = self.car_footprint(env)
-        glow_width, glow_height = int(car_width * 1.35), int(car_length * 2.6)
-        glow = pygame.Surface((glow_width, glow_height), pygame.SRCALPHA)
-        pygame.draw.ellipse(glow, (*glow_color, pulse), (0, 0, glow_width, glow_height))
-        self.screen.blit(glow, (x - glow_width // 2, self.EGO_Y - glow_height // 2))
-
-        trail_width, trail_length = int(car_width * 0.75), int(car_length * 3.2)
-        trail = pygame.Surface((trail_width, trail_length), pygame.SRCALPHA)
-        pygame.draw.polygon(
-            trail,
-            (*self.CYAN, 24),
-            [
-                (trail_width * 0.34, 0),
-                (trail_width * 0.66, 0),
-                (trail_width, trail_length),
-                (0, trail_length),
-            ],
-        )
-        self.screen.blit(trail, (x - trail_width // 2, self.EGO_Y + car_length * 0.5))
-
-        turn_direction = int(np.sign(env.target_lane - self.ego_lane(env)))
         self._draw_car(
             env,
             x,
             self.EGO_Y,
-            (39, 217, 235),
+            (65, 80, 90),
             2,
             agent=True,
             braking=env.brake > 0.05,
-            turn_direction=turn_direction,
+            turn_direction=int(np.sign(env.target_lane - self.ego_lane(env))),
         )
 
     @classmethod
     def car_footprint(cls, env: NeonHighwayEnv) -> tuple[float, float]:
-        """The exact space a car occupies on screen, in pixels.
-
-        The sprite and collision system share CAR_WIDTH and CAR_LENGTH. Keeping
-        the two screen scales close gives the body a believable top-down shape
-        without reintroducing visible overlaps that physics calls a clear gap.
-        """
+        """Return the exact rendered footprint implied by the physics model."""
         lane_pixels = cls.ROAD_WIDTH / env.LANES
         width = env.CAR_WIDTH / env.LANE_WIDTH * lane_pixels
         length = env.CAR_LENGTH * cls.PIXELS_PER_METER
@@ -455,329 +459,315 @@ class NeonRenderer:
         turn_direction: int,
     ) -> None:
         width, height = self.car_footprint(env)
-        sprite_width = max(24, int(round(width)))
-        sprite_height = max(36, int(round(height)))
+        sprite_width = max(24, round(width))
+        sprite_height = max(38, round(height))
         sprite = pygame.Surface((sprite_width, sprite_height), pygame.SRCALPHA)
 
         def point(x_fraction: float, y_fraction: float) -> tuple[int, int]:
-            return int(x_fraction * (sprite_width - 1)), int(y_fraction * (sprite_height - 1))
+            return round(x_fraction * (sprite_width - 1)), round(
+                y_fraction * (sprite_height - 1)
+            )
 
         silhouettes = (
-            # Coupe: tapered nose, pinched waist and broad rear haunches.
-            [(0.28, 0.01), (0.72, 0.01), (0.88, 0.10), (0.96, 0.31),
-             (0.93, 0.76), (0.82, 0.96), (0.18, 0.96), (0.07, 0.76),
-             (0.04, 0.31), (0.12, 0.10)],
-            # Sedan: a balanced bonnet, cabin and luggage deck.
-            [(0.22, 0.01), (0.78, 0.01), (0.91, 0.13), (0.96, 0.36),
-             (0.94, 0.82), (0.82, 0.98), (0.18, 0.98), (0.06, 0.82),
-             (0.04, 0.36), (0.09, 0.13)],
-            # SUV: squarer shoulders and a longer roof.
-            [(0.17, 0.01), (0.83, 0.01), (0.94, 0.12), (0.97, 0.88),
-             (0.86, 0.99), (0.14, 0.99), (0.03, 0.88), (0.06, 0.12)],
+            [
+                (0.28, 0.01),
+                (0.72, 0.01),
+                (0.88, 0.10),
+                (0.96, 0.31),
+                (0.93, 0.76),
+                (0.82, 0.96),
+                (0.18, 0.96),
+                (0.07, 0.76),
+                (0.04, 0.31),
+                (0.12, 0.10),
+            ],
+            [
+                (0.22, 0.01),
+                (0.78, 0.01),
+                (0.91, 0.13),
+                (0.96, 0.36),
+                (0.94, 0.82),
+                (0.82, 0.98),
+                (0.18, 0.98),
+                (0.06, 0.82),
+                (0.04, 0.36),
+                (0.09, 0.13),
+            ],
+            [
+                (0.17, 0.01),
+                (0.83, 0.01),
+                (0.94, 0.12),
+                (0.97, 0.88),
+                (0.86, 0.99),
+                (0.14, 0.99),
+                (0.03, 0.88),
+                (0.06, 0.12),
+            ],
         )
-        outline = [point(*coordinates) for coordinates in silhouettes[style % len(silhouettes)]]
-        shadow = [(x + 2, min(y + 3, sprite_height - 1)) for x, y in outline]
-        pygame.draw.polygon(sprite, (1, 4, 8, 170), shadow)
+        outline = [point(*coordinates) for coordinates in silhouettes[style % 3]]
+        shadow = [(x + 3, min(y + 4, sprite_height - 1)) for x, y in outline]
+        pygame.draw.polygon(sprite, (2, 5, 7, 150), shadow)
 
-        # Tyres remain inside the physical footprint; mirrors establish its
-        # widest visible points, so touching sprites and touching hitboxes agree.
-        wheel_height = max(8, int(sprite_height * 0.22))
-        wheel_width = max(3, int(sprite_width * 0.07))
-        for wheel_y in (int(sprite_height * 0.18), int(sprite_height * 0.66)):
+        wheel_height = max(8, round(sprite_height * 0.22))
+        wheel_width = max(3, round(sprite_width * 0.07))
+        for wheel_y in (round(sprite_height * 0.18), round(sprite_height * 0.66)):
             pygame.draw.rect(
-                sprite, (3, 5, 8), (1, wheel_y, wheel_width, wheel_height), border_radius=2
+                sprite,
+                (4, 6, 8),
+                (1, wheel_y, wheel_width, wheel_height),
+                border_radius=2,
             )
             pygame.draw.rect(
                 sprite,
-                (3, 5, 8),
+                (4, 6, 8),
                 (sprite_width - wheel_width - 1, wheel_y, wheel_width, wheel_height),
                 border_radius=2,
             )
 
         pygame.draw.polygon(sprite, color, outline)
-        body_highlight = tuple(min(channel + 60, 255) for channel in color)
-        pygame.draw.aalines(sprite, body_highlight, True, outline)
+        body_edge = tuple(min(channel + 28, 255) for channel in color)
+        pygame.draw.aalines(sprite, body_edge, True, outline)
 
-        # Side mirrors, bonnet creases and bumpers make the silhouettes read as
-        # actual vehicles instead of rounded UI rectangles.
-        mirror_y = int(sprite_height * (0.34 if style != 2 else 0.29))
-        mirror_size = max(3, int(sprite_width * 0.08))
-        pygame.draw.ellipse(sprite, color, (0, mirror_y, mirror_size, mirror_size - 1))
-        pygame.draw.ellipse(
-            sprite,
-            color,
-            (sprite_width - mirror_size, mirror_y, mirror_size, mirror_size - 1),
+        glass = (15, 25, 32)
+        glass_edge = (78, 100, 112)
+        windows = (
+            [point(0.28, 0.28), point(0.72, 0.28), point(0.79, 0.43), point(0.21, 0.43)],
+            [point(0.22, 0.46), point(0.78, 0.46), point(0.75, 0.61), point(0.25, 0.61)],
+            [point(0.25, 0.64), point(0.75, 0.64), point(0.69, 0.77), point(0.31, 0.77)],
         )
-        crease = tuple(max(channel - 45, 0) for channel in color)
-        pygame.draw.aaline(sprite, crease, point(0.26, 0.08), point(0.33, 0.27))
-        pygame.draw.aaline(sprite, crease, point(0.74, 0.08), point(0.67, 0.27))
-        pygame.draw.aaline(sprite, crease, point(0.17, 0.86), point(0.30, 0.78))
-        pygame.draw.aaline(sprite, crease, point(0.83, 0.86), point(0.70, 0.78))
-
-        glass = (10, 24, 38, 255)
-        glass_highlight = (75, 125, 151, 235)
-        windscreen = [point(0.28, 0.29), point(0.72, 0.29), point(0.79, 0.43), point(0.21, 0.43)]
-        roof = [point(0.21, 0.45), point(0.79, 0.45), point(0.76, 0.61), point(0.24, 0.61)]
-        rear_window = [point(0.24, 0.63), point(0.76, 0.63), point(0.70, 0.76), point(0.30, 0.76)]
-        for window in (windscreen, roof, rear_window):
+        for window in windows:
             pygame.draw.polygon(sprite, glass, window)
-            pygame.draw.aalines(sprite, glass_highlight, True, window)
-        pygame.draw.aaline(sprite, (126, 167, 186), point(0.31, 0.31), point(0.44, 0.40))
+            pygame.draw.aalines(sprite, glass_edge, True, window)
 
-        if style % 3 == 2:
-            pygame.draw.line(sprite, (170, 180, 188), point(0.24, 0.24), point(0.24, 0.78), 2)
-            pygame.draw.line(sprite, (170, 180, 188), point(0.76, 0.24), point(0.76, 0.78), 2)
+        headlight = (220, 228, 223)
+        pygame.draw.line(sprite, headlight, point(0.17, 0.08), point(0.35, 0.05), 3)
+        pygame.draw.line(sprite, headlight, point(0.65, 0.05), point(0.83, 0.08), 3)
+        tail_color = self.DANGER if braking else (133, 68, 72)
+        tail_width = 4 if braking else 2
+        pygame.draw.line(sprite, tail_color, point(0.17, 0.91), point(0.38, 0.94), tail_width)
+        pygame.draw.line(sprite, tail_color, point(0.62, 0.94), point(0.83, 0.91), tail_width)
 
-        headlight = (226, 250, 255)
-        pygame.draw.polygon(
-            sprite,
-            headlight,
-            [point(0.18, 0.05), point(0.36, 0.04), point(0.32, 0.11), point(0.15, 0.12)],
-        )
-        pygame.draw.polygon(
-            sprite,
-            headlight,
-            [point(0.64, 0.04), point(0.82, 0.05), point(0.85, 0.12), point(0.68, 0.11)],
-        )
-        tail_color = (255, 35, 65) if braking else (185, 24, 52)
-        tail_thickness = 4 if braking else 3
-        pygame.draw.line(sprite, tail_color, point(0.17, 0.91), point(0.39, 0.94), tail_thickness)
-        pygame.draw.line(sprite, tail_color, point(0.61, 0.94), point(0.83, 0.91), tail_thickness)
-        pygame.draw.line(sprite, (15, 18, 24), point(0.37, 0.97), point(0.63, 0.97), 2)
-
-        if turn_direction != 0 and (pygame.time.get_ticks() // 180) % 2 == 0:
+        if turn_direction and (pygame.time.get_ticks() // 220) % 2 == 0:
             signal_x = 0.13 if turn_direction < 0 else 0.87
-            pygame.draw.circle(sprite, self.AMBER, point(signal_x, 0.91), 3)
+            pygame.draw.circle(sprite, self.WARNING, point(signal_x, 0.91), 3)
 
         if agent:
-            pygame.draw.aalines(sprite, (174, 252, 255), True, outline)
-            pygame.draw.aalines(sprite, self.CYAN, True, outline)
-            badge = self.font_tiny.render("RL", True, (225, 255, 255))
-            sprite.blit(
-                badge,
-                badge.get_rect(center=point(0.50, 0.54)),
-            )
+            # The roof stripe and crisp outline identify ego without an aura.
+            pygame.draw.aalines(sprite, self.ACCENT, True, outline)
+            pygame.draw.line(sprite, self.ACCENT, point(0.49, 0.30), point(0.49, 0.76), 3)
+            pygame.draw.line(sprite, self.TEXT, point(0.53, 0.30), point(0.53, 0.76), 1)
 
         self.screen.blit(
             sprite,
-            (int(round(center_x - sprite_width / 2)), int(round(center_y - sprite_height / 2))),
+            (round(center_x - sprite_width / 2), round(center_y - sprite_height / 2)),
         )
 
-    def _draw_header(self, env: NeonHighwayEnv) -> None:
-        self._glass_panel(pygame.Rect(18, 16, self.WIDTH - 36, 66), alpha=226, radius=18)
-        self._text("NEON HIGHWAY", self.font_medium, self.CYAN, 40, 29)
-        version = NeonHighwayEnv.VERSION.rsplit("-", 1)[-1].upper()
-        subtitle = f"REINFORCEMENT LEARNING LAB / {version}"
-        if env.endless:
-            subtitle += " / ENDLESS"
-        self._text(subtitle, self.font_tiny, self.MUTED, 40, 55)
+    def _draw_panel_shells(self) -> None:
+        self._panel(self.LEFT_PANEL)
+        self._panel(self.RIGHT_PANEL)
 
-        total = int(env.hud_data.get("training_total", 0))
-        step = int(env.hud_data.get("training_step", 0))
-        progress = min(step / total, 1.0) if total > 0 else env.difficulty
-        bar_x, bar_y, bar_width = 416, 48, 610
-        if total > 0:
-            label, value = "TRAINING PROGRESS", f"{step:,} / {total:,}"
-        elif env.endless:
-            # No finish line to count down to, so the bar tracks this run
-            # against the longest one of the session.
-            best = float(env.hud_data.get("longest_survival", 0.0))
-            label = (
-                f"SURVIVED {format_duration(env.elapsed_seconds)}"
-                f"   /   {env.ego_position / 1000.0:.2f} km"
-            )
-            value = f"LONGEST {format_duration(max(best, env.elapsed_seconds))}"
-            progress = env.elapsed_seconds / max(best, env.elapsed_seconds, 1.0)
-        else:
-            label, value = "EPISODE PROGRESS", f"{progress * 100:4.1f}%"
-        self._text(label, self.font_tiny, self.MUTED, bar_x, 27)
-        self._text(value, self.font_tiny, self.TEXT, bar_x + bar_width - 92, 27)
-        pygame.draw.rect(self.screen, (30, 41, 57), (bar_x, bar_y, bar_width, 10), border_radius=5)
-        pygame.draw.rect(
-            self.screen,
-            self.CYAN,
-            (bar_x, bar_y, int(bar_width * progress), 10),
-            border_radius=5,
-        )
+    def _draw_drive_view(self, env: NeonHighwayEnv) -> None:
+        self._draw_driver_panel(env)
+        self._draw_safety_panel(env)
 
-        mode = str(env.hud_data.get("mode", "RUNNING"))
-        mode_color = self.PINK if "EXPLOR" in mode or "RANDOM" in mode else self.GREEN
-        self._pill(mode, 1170, 34, mode_color)
-
-    def _draw_left_dashboard(self, env: NeonHighwayEnv) -> None:
-        x, y, width, height = 18, 96, 318, 640
-        self._glass_panel(pygame.Rect(x, y, width, height), alpha=218, radius=18)
-        self._section_title("SESSION", x + 22, y + 18, self.CYAN)
-
-        self._metric_pair("EPISODE", f"{env.episode_index:03d}", x + 22, y + 59)
-        self._metric_pair("LIVE RETURN", f"{env.episode_return:+7.2f}", x + 22, y + 91)
-        mean_return = float(env.hud_data.get("mean_return", 0.0))
-        best_return = float(env.hud_data.get("best_return", 0.0))
-        self._metric_pair("MEAN / 20", f"{mean_return:+7.2f}", x + 22, y + 123)
-        self._metric_pair("BEST", f"{best_return:+7.2f}", x + 22, y + 155)
-
-        self._divider(x + 20, y + 193, width - 40)
-        recent_returns = list(env.hud_data.get("recent_returns", []))
-        training = int(env.hud_data.get("training_total", 0)) > 0
-        if training or recent_returns:
-            self._section_title("LEARNING TREND", x + 22, y + 210, self.PINK)
-            graph_rect = pygame.Rect(x + 22, y + 244, width - 44, 112)
-            self._draw_sparkline(graph_rect, recent_returns)
-        else:
-            self._section_title("DRIVE QUALITY", x + 22, y + 210, self.GREEN)
-            net_passes = env.overtakes - env.passed_by_traffic
-            avoidable_rate = env.avoidable_following_steps / max(env.step_count, 1)
-            self._metric_pair("NET PASSES", f"{net_passes:+d}", x + 22, y + 248)
-            self._metric_pair("LANE CHANGES", str(env.lane_changes), x + 22, y + 278)
-            self._metric_pair(
-                "AVOIDABLE FOLLOW", f"{avoidable_rate:.0%}", x + 22, y + 308
-            )
-            self._metric_pair(
-                "TRAFFIC MOVES", str(env.traffic_lane_changes), x + 22, y + 338
-            )
-
-        self._divider(x + 20, y + 374, width - 40)
-        self._section_title("OUTCOMES", x + 22, y + 390, self.GREEN)
-        collisions = int(env.hud_data.get("collisions", 0))
-        completions = int(env.hud_data.get("completions", 0))
-        self._stat_box("COMPLETED", str(completions), x + 22, y + 426, 126, self.GREEN)
-        self._stat_box("CRASHED", str(collisions), x + 164, y + 426, 126, self.RED)
-
-        collision_types = env.hud_data.get("collision_types", {})
-        self._mini_metric(
-            "FRONT IMPACT", int(collision_types.get("FRONT IMPACT", 0)), x + 22, y + 496
-        )
-        self._mini_metric(
-            "SIDE IMPACT", int(collision_types.get("SIDE IMPACT", 0)), x + 22, y + 522
-        )
-        self._mini_metric(
-            "REAR IMPACT", int(collision_types.get("REAR IMPACT", 0)), x + 22, y + 548
-        )
-
-        self._divider(x + 20, y + 578, width - 40)
-        self._mini_metric("OVERTAKES", env.overtakes, x + 22, y + 594)
-        self._mini_metric(
-            "NET PASSES", env.overtakes - env.passed_by_traffic, x + 154, y + 594
-        )
-
-    def _draw_right_dashboard(self, env: NeonHighwayEnv) -> None:
-        x, y, width, height = self.WIDTH - 336, 96, 318, 640
-        self._glass_panel(pygame.Rect(x, y, width, height), alpha=218, radius=18)
-        self._section_title("DRIVER STATE", x + 22, y + 18, self.TEXT)
-        self._text(f"{env.ego_speed * 3.6:03.0f}", self.font_speed, self.TEXT, x + 20, y + 48)
-        self._text("km/h", self.font_small_bold, self.MUTED, x + 154, y + 90)
-        self._pill(f"LANE {env.target_lane + 1}/{env.LANES}", x + 205, y + 58, self.CYAN)
-        self._text("TARGET SPEED", self.font_tiny, self.MUTED, x + 205, y + 94)
+    def _draw_driver_panel(self, env: NeonHighwayEnv) -> None:
+        x = self.LEFT_PANEL.x + 18
+        self._section_title("Speed", x, 35, self.ACCENT)
         self._text(
-            f"{env.target_speed * 3.6:03.0f} km/h",
-            self.font_small_bold,
-            self.CYAN,
-            x + 205,
-            y + 111,
+            f"{env.ego_speed * 3.6:03.0f} km/h",
+            self.font_speed,
+            self.TEXT,
+            x,
+            78,
+            max_width=256,
         )
+
+        self._small_card(
+            pygame.Rect(x, 168, 121, 74),
+            "Target",
+            f"{env.target_speed * 3.6:.0f} km/h",
+        )
+        self._small_card(
+            pygame.Rect(x + 135, 168, 121, 74),
+            "Lane",
+            f"{env.target_lane + 1} of {env.LANES}",
+        )
+
+        intent = str(env.hud_data.get("driving_intent", env._info()["action"]))
+        desired_speed = float(env.hud_data.get("desired_speed", env.target_speed)) * 3.6
+        _, pedal = decode_action(env.last_action)
+        pedal_name = ["Brake", "Coast", "Accelerate"][pedal]
+        braking_mode = str(env.hud_data.get("braking_mode", pedal_name))
+        self._section_title("Intent", x, 277, self.ACCENT)
+        self._text(intent, self.font_medium, self.TEXT, x, 319, max_width=256)
         self._text(
-            f"ACCEL {env.longitudinal_acceleration:+.2f} m/s2",
+            f"{desired_speed:.0f} km/h · {braking_mode}",
             self.font_tiny,
             self.MUTED,
-            x + 22,
-            y + 114,
+            x,
+            354,
+            max_width=256,
         )
-        driving_intent = env.hud_data.get("driving_intent")
-        if driving_intent:
-            self._metric_pair("INTENT", str(driving_intent), x + 22, y + 139)
-            desired_speed = float(env.hud_data.get("desired_speed", env.target_speed))
-            braking_mode = str(env.hud_data.get("braking_mode", "COAST"))
-            braking_reason = str(env.hud_data.get("braking_reason", ""))
-            speed_reason = str(env.hud_data.get("speed_reason", "speed plan"))
-            reason = (
-                braking_reason
-                if braking_mode in {"COMFORT BRAKE", "EMERGENCY", "RECOVER"}
-                else speed_reason
-            )[:27]
-            self._text(
-                f"{braking_mode} {desired_speed * 3.6:.0f} km/h | {reason}",
-                self.font_tiny,
-                self.MUTED,
-                x + 22,
-                y + 157,
-            )
-        else:
-            self._metric_pair("ACTION", env._info()["action"], x + 22, y + 139)
-        self._pedal_bar("THROTTLE", env.throttle, x + 22, y + 184, 126, self.GREEN)
-        self._pedal_bar("BRAKE", env.brake, x + 164, y + 184, 126, self.RED)
 
-        self._divider(x + 20, y + 208, width - 40)
-        self._section_title("360 SAFETY RADAR", x + 22, y + 225, self.AMBER)
-        threat = env.current_threat()
-        rear_threat = env.rear_threat()
-        threat_color = (
-            self.RED
-            if threat["level"] > 0.65
-            else self.AMBER
-            if threat["level"] > 0.3
-            else self.GREEN
-        )
-        self._gauge(x + 22, y + 260, width - 44, threat["level"], threat_color)
-        front_ttc = f"{threat['ttc']:.1f}s" if np.isfinite(threat["ttc"]) else "CLEAR"
-        rear_ttc = (
-            f"{rear_threat['ttc']:.1f}s" if np.isfinite(rear_threat["ttc"]) else "CLEAR"
-        )
-        self._metric_pair("FRONT TTC", front_ttc, x + 22, y + 285)
-        self._metric_pair("REAR TTC", rear_ttc, x + 22, y + 311)
-        challenge_count = f"{env.challenges_resolved}/{len(env.challenge_steps)}"
-        challenge_label = challenge_count if env.difficulty_mode == "hard" else "STANDARD"
-        if env.endless:
-            challenge_label = f"{env.challenges_resolved} CLEARED"
-        self._metric_pair("CHALLENGES", challenge_label, x + 22, y + 337)
+        self._divider(x, 405, 256)
+        self._section_title("Inputs", x, 426, self.MUTED)
+        self._value_bar("Throttle", env.throttle, x, 474, 256, self.SUCCESS)
+        self._value_bar("Brake", env.brake, x, 526, 256, self.DANGER)
 
-        self._divider(x + 20, y + 369, width - 40)
-        self._section_title("REWARD SIGNAL", x + 22, y + 385, self.PINK)
+        self._text("Space  Pause · H  Sensors", self.font_tiny, self.MUTED, x, 730)
+        self._text("Tab  Analysis · Esc  Exit", self.font_tiny, self.ACCENT, x, 762)
+
+    def _draw_safety_panel(self, env: NeonHighwayEnv) -> None:
+        x = self.RIGHT_PANEL.x + 18
+        mode = str(env.hud_data.get("mode", "Running"))
+        mode_color = (
+            self.WARNING
+            if any(word in mode.upper() for word in ("EXPLOR", "RANDOM"))
+            else self.SUCCESS
+        )
+        self._pill(mode.title(), x, 32, mode_color)
+
+        _, value, progress = self._progress_state(env)
+        self._section_title("Progress", x, 85, self.ACCENT)
+        self._text(value, self.font_small_bold, self.TEXT, x, 132, max_width=256)
+        self._progress_bar(x, 174, 256, progress, self.ACCENT)
+
+        self._divider(x, 216, 256)
+        self._section_title("Safety", x, 239, self.WARNING)
+        front = env.current_threat()
+        rear = env.rear_threat()
+        front_value = self._format_ttc(float(front["ttc"]))
+        rear_value = self._format_ttc(float(rear["ttc"]))
+        self._ttc_card(
+            pygame.Rect(x, 282, 121, 84),
+            "Front TTC",
+            front_value,
+            self._risk_color(float(front["ttc"])),
+        )
+        self._ttc_card(
+            pygame.Rect(x + 135, 282, 121, 84),
+            "Rear TTC",
+            rear_value,
+            self._risk_color(float(rear["ttc"])),
+        )
+
+        net_passes = env.overtakes - env.passed_by_traffic
+        self._divider(x, 411, 256)
+        self._small_card(
+            pygame.Rect(x, 439, 256, 82),
+            "Net passes",
+            f"{net_passes:+d}",
+            self.SUCCESS if net_passes >= 0 else self.WARNING,
+        )
+        self._text("Tab  Open full analysis", self.font_tiny, self.ACCENT, x, 762)
+
+    def _draw_analysis_view(self, env: NeonHighwayEnv) -> None:
+        self._draw_analysis_left(env)
+        self._draw_analysis_right(env)
+
+    def _draw_analysis_left(self, env: NeonHighwayEnv) -> None:
+        x = self.LEFT_PANEL.x + 18
+        self._text("Analysis", self.font_medium, self.TEXT, x, 31)
+        self._text("Tab returns to drive", self.font_tiny, self.ACCENT, x, 59)
+        self._divider(x, 88, 256)
+
+        self._section_title("Reward signal", x, 104, self.ACCENT)
         components = env.last_reward_components
-        component_colors = [
-            self.CYAN,
-            self.GREEN,
-            self.AMBER,
-            (120, 200, 255),
-            (179, 125, 246),
-            self.RED,
-            (235, 238, 244),
-        ]
+        colors = {
+            "progress": self.SUCCESS,
+            "traffic": self.ACCENT,
+            "safety": self.WARNING,
+            "shaping": self.ACCENT,
+            "comfort": self.SUCCESS,
+            "rules": self.WARNING,
+            "terminal": self.DANGER,
+        }
         for index, name in enumerate(
-            ["progress", "traffic", "safety", "shaping", "comfort", "rules", "terminal"]
+            ("progress", "traffic", "safety", "shaping", "comfort", "rules", "terminal")
         ):
             self._reward_bar(
-                name.upper(),
+                name.title(),
                 float(components.get(name, 0.0)),
-                x + 22,
-                y + 410 + index * 17,
-                width - 44,
-                component_colors[index],
+                x,
+                139 + index * 28,
+                256,
+                colors[name],
             )
 
-        self._divider(x + 20, y + 532, width - 40)
-        q_values = [
-            float(value)
-            for value in env.hud_data.get("q_values", [0.0] * ACTION_COUNT)
-        ]
-        has_action_values = (
-            max(q_values, default=0.0) - min(q_values, default=0.0) > 1e-5
+        self._divider(x, 350, 256)
+        self._section_title("Observation", x, 367, self.ACCENT)
+        observation_count = int(env.observation_space.shape[0])
+        self._metric_row("State values", str(observation_count), x, 405, 256)
+        self._metric_row("Action space", f"{ACTION_COUNT} steer × pedal", x, 435, 256)
+        self._metric_row("Range sensors", "Visible" if self.show_sensors else "Hidden", x, 465, 256)
+        self._metric_row(
+            "Traffic model",
+            "Dynamic" if env.dynamic_traffic else "Fixed",
+            x,
+            495,
+            256,
         )
-        if has_action_values:
-            self._section_title("ACTION VALUES / Q", x + 22, y + 540, self.CYAN)
-            self._draw_q_values(env, q_values, x + 22, y + 578, width - 44)
-        else:
-            self._section_title("DECISION TRACE", x + 22, y + 540, self.CYAN)
-            learned = str(env.hud_data.get("raw_action", "FROZEN POLICY"))
-            residual = str(
-                env.hud_data.get(
-                    "dagger_decision",
-                    env.hud_data.get("preference_decision", "V6 BASE"),
-                )
+
+        self._divider(x, 535, 256)
+        self._section_title("Collision history", x, 552, self.DANGER)
+        collisions = int(env.hud_data.get("collisions", 0))
+        completions = int(env.hud_data.get("completions", 0))
+        collision_types = env.hud_data.get("collision_types", {})
+        self._metric_row("All collisions", str(collisions), x, 590, 256)
+        self._metric_row("Front impact", str(collision_types.get("FRONT IMPACT", 0)), x, 620, 256)
+        self._metric_row("Side impact", str(collision_types.get("SIDE IMPACT", 0)), x, 650, 256)
+        self._metric_row("Rear impact", str(collision_types.get("REAR IMPACT", 0)), x, 680, 256)
+        self._metric_row("Completed", str(completions), x, 710, 256)
+        self._text("H toggles range geometry", self.font_tiny, self.MUTED, x, 758)
+
+    def _draw_analysis_right(self, env: NeonHighwayEnv) -> None:
+        x = self.RIGHT_PANEL.x + 18
+        self._text("Policy trace", self.font_medium, self.TEXT, x, 31)
+        self._text("Live diagnostics", self.font_tiny, self.MUTED, x, 59)
+        self._divider(x, 88, 256)
+
+        q_values = [float(value) for value in env.hud_data.get("q_values", [0.0] * ACTION_COUNT)]
+        self._section_title("Q values", x, 104, self.ACCENT)
+        self._draw_q_values(env, q_values, x, 146, 256)
+
+        self._divider(x, 248, 256)
+        self._section_title("Training trend", x, 261, self.SUCCESS)
+        recent_returns = list(env.hud_data.get("recent_returns", []))
+        self._draw_sparkline(pygame.Rect(x, 296, 256, 96), recent_returns)
+
+        self._divider(x, 410, 256)
+        self._section_title("Decision trace", x, 425, self.ACCENT)
+        learned = str(env.hud_data.get("raw_action", env._info()["action"]))
+        residual = str(
+            env.hud_data.get(
+                "dagger_decision",
+                env.hud_data.get("preference_decision", "Base policy"),
             )
-            shield = (str(env.hud_data.get("lane_veto_reason", "")) or "CLEAR").upper()
-            self._metric_pair("LEARNED", learned[:17], x + 22, y + 574)
-            self._metric_pair("RESIDUAL", residual[:17], x + 22, y + 598)
-            self._metric_pair("SAFETY SHIELD", shield[:17], x + 22, y + 622)
+        )
+        shield = str(env.hud_data.get("lane_veto_reason", "")) or "Clear"
+        self._metric_row("Learned", learned, x, 463, 256)
+        self._metric_row("Residual", residual, x, 491, 256)
+        self._metric_row("Safety shield", shield, x, 519, 256)
+
+        self._divider(x, 551, 256)
+        self._section_title("Session and performance", x, 563, self.SUCCESS)
+        avoidable_rate = env.avoidable_following_steps / max(env.step_count, 1)
+        mean_return = float(env.hud_data.get("mean_return", 0.0))
+        best_return = float(env.hud_data.get("best_return", 0.0))
+        drive_rows = (
+            ("Episode", str(env.episode_index)),
+            ("Live return", f"{env.episode_return:+.2f}"),
+            ("Mean / 20", f"{mean_return:+.2f}"),
+            ("Best", f"{best_return:+.2f}"),
+            ("Overtakes / passed", f"{env.overtakes} / {env.passed_by_traffic}"),
+            ("Lane changes", str(env.lane_changes)),
+            ("Traffic lane changes", str(env.traffic_lane_changes)),
+            ("Longitudinal accel", f"{env.longitudinal_acceleration:+.2f} m/s²"),
+            ("Near misses", str(env.near_misses)),
+            ("Avoidable follow", f"{avoidable_rate:.0%}"),
+        )
+        for index, (label, value) in enumerate(drive_rows):
+            self._metric_row(label, value, x, 596 + index * 19, 256)
 
     def _draw_q_values(
         self,
@@ -787,243 +777,202 @@ class NeonRenderer:
         y: int,
         width: int,
     ) -> None:
-        """Draw the nine action values as a steer x pedal grid.
-
-        A flat list of nine rows no longer fits the panel, and the grid shows
-        the structure the action space actually has.
-        """
         if len(q_values) != ACTION_COUNT:
             q_values = [0.0] * ACTION_COUNT
         minimum, maximum = min(q_values), max(q_values)
         spread = maximum - minimum
         best = q_values.index(maximum)
         selected_steer, _ = decode_action(env.last_action)
-
-        cell_width = (width - 54) // 3
-        for pedal, label in enumerate(["BRAKE", "COAST", "GAS"]):
-            self._text(
-                label, self.font_tiny, self.MUTED, x + 54 + pedal * cell_width, y - 14
-            )
-        for steer, label in enumerate(["LEFT", "KEEP", "RIGHT"]):
-            row_y = y + steer * 22
-            active_row = steer == selected_steer
+        label_width = 48
+        cell_width = (width - label_width) // 3
+        for pedal, label in enumerate(("Brake", "Coast", "Gas")):
             self._text(
                 label,
                 self.font_tiny,
-                self.TEXT if active_row else self.MUTED,
+                self.MUTED,
+                x + label_width + pedal * cell_width,
+                y - 23,
+            )
+        for steer, label in enumerate(("Left", "Keep", "Right")):
+            row_y = y + steer * 30
+            self._text(
+                label,
+                self.font_tiny,
+                self.TEXT if steer == selected_steer else self.MUTED,
                 x,
-                row_y + 1,
+                row_y,
             )
             for pedal in range(3):
                 action = encode_action(steer, pedal)
                 value = q_values[action]
                 normalized = (value - minimum) / spread if spread > 1e-6 else 0.5
-                cell_x = x + 54 + pedal * cell_width
-                bar_width = cell_width - 8
-                is_best = action == best
-                color = self.CYAN if is_best else (76, 91, 112)
-                pygame.draw.rect(
-                    self.screen, (25, 35, 49), (cell_x, row_y, bar_width, 7), border_radius=3
-                )
+                cell_x = x + label_width + pedal * cell_width
+                cell_rect = pygame.Rect(cell_x, row_y - 1, cell_width - 7, 24)
+                pygame.draw.rect(self.screen, self.PANEL_RAISED, cell_rect, border_radius=5)
                 pygame.draw.rect(
                     self.screen,
-                    color,
-                    (cell_x, row_y, max(2, int(bar_width * normalized)), 7),
-                    border_radius=3,
+                    self.ACCENT if action == best else self.DIVIDER,
+                    (cell_x, row_y + 20, max(2, round((cell_width - 7) * normalized)), 3),
+                    border_radius=2,
                 )
-                self._text(
+                self._center_text_in_rect(
                     f"{value:+.1f}",
                     self.font_tiny,
-                    self.TEXT if is_best else self.MUTED,
-                    cell_x,
-                    row_y + 8,
+                    self.TEXT if action == best else self.MUTED,
+                    cell_rect,
                 )
 
-    def _draw_action_strip(self, env: NeonHighwayEnv) -> None:
-        """Show stable intent prominently and the instantaneous command quietly."""
-        x, y, width = self.ROAD_LEFT + 25, self.HEIGHT - 70, self.ROAD_WIDTH - 50
-        self._glass_panel(pygame.Rect(x, y, width, 48), alpha=226, radius=15)
-        steer, pedal = decode_action(env.last_action)
-        steer_name = ["LEFT", "KEEP", "RIGHT"][steer]
-        pedal_name = ["BRAKE", "COAST", "GAS"][pedal]
-        braking_mode = str(env.hud_data.get("braking_mode", pedal_name))
-        desired_speed = float(env.hud_data.get("desired_speed", env.target_speed)) * 3.6
-        intent = str(env.hud_data.get("driving_intent", "CRUISE"))
-        groups = (
-            ("LANE PLAN", steer_name, self.CYAN, x + 18),
-            ("DRIVING INTENT", intent, self.GREEN, x + 165),
-            (
-                "SPEED PLAN",
-                f"{desired_speed:.0f} km/h / {braking_mode}",
-                self.AMBER,
-                x + 330,
-            ),
-        )
-        for label, value, color, group_x in groups:
-            self._text(label, self.font_tiny, self.MUTED, group_x, y + 7)
-            self._text(value, self.font_small_bold, color, group_x, y + 23)
-
-    def _draw_footer(self, env: NeonHighwayEnv) -> None:
-        if env.hud_data.get("dagger_collecting", False):
-            controls = (
-                "A/D or LEFT/RIGHT  lane    K  keep    W/UP  faster    "
-                "S/DOWN  slower    ENTER  approve    U  undo"
-            )
-        else:
-            controls = "SPACE  pause       H  toggle sensors       ESC  save and exit"
-        self._text(
-            controls,
-            self.font_tiny,
-            self.MUTED,
-            22,
-            self.HEIGHT - 20,
-        )
-        observations = env.observation_space.shape[0]
-        self._text(
-            f"OBSERVATION: {observations} VALUES / ACTIONS: STEER x PEDAL",
-            self.font_tiny,
-            self.MUTED,
-            1030,
-            self.HEIGHT - 20,
-        )
-
-    def _draw_teacher_overlay(self, env: NeonHighwayEnv) -> None:
-        """Small, readable teaching status without replacing the driving view."""
-        x, y, width, height = self.ROAD_LEFT + 24, 86, self.ROAD_WIDTH - 48, 86
-        self._glass_panel(pygame.Rect(x, y, width, height), alpha=232, radius=16)
-        self._section_title("HUMAN TEACHER / DAGGER", x + 16, y + 10, self.GREEN)
-        proposal = str(env.hud_data.get("dagger_proposal", "HOLD"))
-        last_label = str(env.hud_data.get("dagger_last_label", "waiting for your first label"))
+    def _draw_teacher_status(self, env: NeonHighwayEnv) -> None:
+        """Keep teaching state in the left cockpit rail, never over the road."""
+        rect = pygame.Rect(self.LEFT_PANEL.x + 10, 558, self.LEFT_PANEL.width - 20, 226)
+        self._panel(rect, raised=True)
+        x = rect.x + 14
+        self._section_title("Human teacher", x, rect.y + 16, self.SUCCESS)
+        proposal = str(env.hud_data.get("dagger_proposal", "Hold"))
+        last_label = str(env.hud_data.get("dagger_last_label", "Waiting for a label"))
         labels = int(env.hud_data.get("dagger_labels", 0))
-        lane_corrections = int(env.hud_data.get("dagger_lane_corrections", 0))
-        speed_corrections = int(env.hud_data.get("dagger_speed_corrections", 0))
+        lane = int(env.hud_data.get("dagger_lane_corrections", 0))
+        speed = int(env.hud_data.get("dagger_speed_corrections", 0))
         self._text(
-            f"DRIVER PROPOSES  {proposal}",
+            f"Proposal  {proposal}",
             self.font_small_bold,
-            self.CYAN,
-            x + 17,
-            y + 37,
+            self.TEXT,
+            x,
+            rect.y + 57,
+            max_width=244,
         )
+        self._text(last_label, self.font_tiny, self.MUTED, x, rect.y + 91, max_width=244)
         self._text(
-            f"{labels} labels  /  lane {lane_corrections}  /  speed {speed_corrections}",
+            f"{labels} labels · {lane} lane · {speed} speed",
             self.font_tiny,
             self.TEXT,
-            x + 17,
-            y + 61,
+            x,
+            rect.y + 126,
+            max_width=244,
         )
-        label_surface = self.font_tiny.render(last_label, True, self.MUTED)
-        self.screen.blit(label_surface, (x + width - label_surface.get_width() - 17, y + 61))
-
-    def _draw_impact_particles(self, env: NeonHighwayEnv, phase: float) -> None:
-        rng = np.random.default_rng(env.episode_index * 7919)
-        center_x = self._lane_center_x(env, self.ego_lane(env))
-        center_y = self.EGO_Y - self.car_footprint(env)[1] / 2.0
-        for _ in range(34):
-            angle = float(rng.uniform(0, math.tau))
-            distance = float(rng.uniform(35, 155)) * phase
-            x = int(center_x + math.cos(angle) * distance)
-            y = int(center_y + math.sin(angle) * distance + 45 * phase * phase)
-            color = self.AMBER if rng.random() > 0.35 else self.RED
-            size = int(rng.integers(2, 6))
-            pygame.draw.circle(self.screen, color, (x, y), size)
-            tail_x = int(x - math.cos(angle) * 14)
-            tail_y = int(y - math.sin(angle) * 14)
-            pygame.draw.line(self.screen, color, (x, y), (tail_x, tail_y), 2)
-
-        ring_radius = int(35 + 100 * phase)
-        ring = pygame.Surface((ring_radius * 2 + 6, ring_radius * 2 + 6), pygame.SRCALPHA)
-        pygame.draw.circle(
-            ring,
-            (*self.RED, int(170 * (1.0 - phase))),
-            (ring_radius + 3, ring_radius + 3),
-            ring_radius,
-            4,
+        self._text(
+            "Arrows/WASD · Enter · U undo",
+            self.font_tiny,
+            self.ACCENT,
+            x,
+            rect.y + 169,
+            max_width=244,
         )
-        self.screen.blit(ring, (center_x - ring_radius - 3, center_y - ring_radius - 3))
 
     def _draw_crash_overlay(self, env: NeonHighwayEnv, phase: float) -> None:
-        overlay = pygame.Surface((self.WIDTH, self.HEIGHT), pygame.SRCALPHA)
-        overlay.fill((185, 12, 42, int(40 + 48 * phase)))
-        self.screen.blit(overlay, (0, 0))
-
         collision = env.last_collision
         if collision is None:
-            return
-        panel = pygame.Rect(470, 232, 500, 310)
-        self._glass_panel(panel, alpha=int(150 + 85 * phase), radius=22)
-        severity_color = {
-            "LOW": self.AMBER,
-            "MEDIUM": (255, 119, 65),
-            "HIGH": self.RED,
-        }[collision.severity]
-        self._center_text("IMPACT DETECTED", self.font_large, self.RED, 268)
-        self._pill(f"{collision.severity} SEVERITY", 621, 311, severity_color)
-        self._center_text(collision.kind, self.font_medium, self.TEXT, 359)
-        impact_summary = (
-            f"Impact speed  {collision.impact_speed * 3.6:.1f} km/h   |   Lane {collision.lane + 1}"
-        )
-        self._center_text(
-            impact_summary,
-            self.font_small_bold,
-            self.TEXT,
-            405,
-        )
-        self._center_text(
-            f"Episode return {env.episode_return:+.2f}   |   Near misses {env.near_misses}",
-            self.font_small,
+            title, detail = "Drive ended", "Collision detected"
+        else:
+            title = "Impact detected"
+            detail = f"{collision.kind.title()} · {collision.severity.title()}"
+        card = pygame.Rect(self.RIGHT_PANEL.x + 10, 352, self.RIGHT_PANEL.width - 20, 250)
+        self._panel(card, raised=True)
+        x = card.x + 16
+        pygame.draw.rect(self.screen, self.DANGER, (x, card.y + 17, 42, 4), border_radius=2)
+        self._text(title, self.font_large, self.TEXT, x, card.y + 40, max_width=240)
+        self._text(detail, self.font_small_bold, self.DANGER, x, card.y + 90, max_width=240)
+        if collision is not None:
+            self._text(
+                f"Impact speed {collision.impact_speed * 3.6:.1f} km/h",
+                self.font_tiny,
+                self.TEXT,
+                x,
+                card.y + 124,
+            )
+            self._text(f"Lane {collision.lane + 1}", self.font_tiny, self.MUTED, x, card.y + 151)
+        self._text(
+            f"Episode return {env.episode_return:+.2f}",
+            self.font_tiny,
             self.MUTED,
-            439,
+            x,
+            card.y + 181,
+            max_width=240,
         )
-        self._center_text(
-            "Transition stored in replay memory. Restarting with a new traffic seed.",
-            self.font_small,
-            self.CYAN,
-            496,
-        )
+        self._text("Replay memory updated", self.font_tiny, self.ACCENT, x, card.y + 211)
 
     def _draw_completion_overlay(self, env: NeonHighwayEnv) -> None:
-        overlay = pygame.Surface((self.WIDTH, self.HEIGHT), pygame.SRCALPHA)
-        overlay.fill((15, 130, 104, 42))
-        self.screen.blit(overlay, (0, 0))
-        self._glass_panel(pygame.Rect(500, 290, 440, 170), alpha=232, radius=22)
-        self._center_text("ROUTE COMPLETE", self.font_large, self.GREEN, 330)
-        self._center_text(
-            f"Cleared {env.challenges_resolved} waves  |  Return {env.episode_return:+.2f}",
+        card = pygame.Rect(self.RIGHT_PANEL.x + 10, 352, self.RIGHT_PANEL.width - 20, 220)
+        self._panel(card, raised=True)
+        x = card.x + 16
+        pygame.draw.rect(self.screen, self.SUCCESS, (x, card.y + 17, 42, 4), border_radius=2)
+        self._text("Route complete", self.font_large, self.TEXT, x, card.y + 40, max_width=240)
+        self._text(
+            f"{env.challenges_resolved} waves cleared",
             self.font_small_bold,
-            self.TEXT,
-            388,
+            self.SUCCESS,
+            x,
+            card.y + 96,
         )
-        self._center_text(
-            "Completion bonus added to replay memory.", self.font_small, self.MUTED, 423
+        self._text(
+            f"Episode return {env.episode_return:+.2f}",
+            self.font_tiny,
+            self.TEXT,
+            x,
+            card.y + 132,
+        )
+        self._text(
+            "Completion stored in replay memory",
+            self.font_tiny,
+            self.MUTED,
+            x,
+            card.y + 172,
+            max_width=240,
         )
 
+    def _progress_state(self, env: NeonHighwayEnv) -> tuple[str, str, float]:
+        total = int(env.hud_data.get("training_total", 0))
+        step = int(env.hud_data.get("training_step", 0))
+        if total > 0:
+            return "Training progress", f"{step:,} / {total:,}", min(step / total, 1.0)
+        if env.endless:
+            best = float(env.hud_data.get("longest_survival", 0.0))
+            value = f"{format_duration(env.elapsed_seconds)} · {env.ego_position / 1000.0:.2f} km"
+            progress = env.elapsed_seconds / max(best, env.elapsed_seconds, 1.0)
+            return "Current drive", value, progress
+        progress = min(env.step_count / max(env.max_episode_steps, 1), 1.0)
+        return "Episode progress", f"{progress * 100:.1f}%", progress
+
+    @staticmethod
+    def _format_ttc(value: float) -> str:
+        return f"{value:.1f} s" if np.isfinite(value) else "Clear"
+
+    def _risk_color(self, ttc: float) -> tuple[int, int, int]:
+        if ttc < 2.0:
+            return self.DANGER
+        if ttc < 4.0:
+            return self.WARNING
+        return self.SUCCESS
+
     def _draw_sparkline(self, rect: pygame.Rect, values: list[float]) -> None:
-        pygame.draw.rect(self.screen, (12, 23, 38), rect, border_radius=10)
+        pygame.draw.rect(self.screen, self.PANEL_RAISED, rect, border_radius=9)
         pygame.draw.line(
             self.screen,
-            (37, 50, 67),
-            (rect.left + 8, rect.centery),
-            (rect.right - 8, rect.centery),
-            1,
+            self.DIVIDER,
+            (rect.left + 9, rect.centery),
+            (rect.right - 9, rect.centery),
         )
         if len(values) < 2:
             self._center_text_in_rect(
-                "Waiting for completed episodes", self.font_tiny, self.MUTED, rect
+                "Waiting for completed episodes",
+                self.font_tiny,
+                self.MUTED,
+                rect,
             )
             return
-
         minimum, maximum = min(values), max(values)
         spread = max(maximum - minimum, 1.0)
-        points = []
-        for index, value in enumerate(values):
-            px = rect.left + 9 + index * (rect.width - 18) / (len(values) - 1)
-            py = rect.bottom - 9 - (value - minimum) / spread * (rect.height - 18)
-            points.append((int(px), int(py)))
-        pygame.draw.aalines(self.screen, self.CYAN, False, points)
-        for point in points[-3:]:
-            pygame.draw.circle(self.screen, self.PINK, point, 3)
+        points = [
+            (
+                round(rect.left + 9 + index * (rect.width - 18) / (len(values) - 1)),
+                round(rect.bottom - 9 - (value - minimum) / spread * (rect.height - 18)),
+            )
+            for index, value in enumerate(values)
+        ]
+        pygame.draw.aalines(self.screen, self.ACCENT, False, points)
+        pygame.draw.circle(self.screen, self.SUCCESS, points[-1], 4)
         self._text(f"{maximum:+.1f}", self.font_tiny, self.MUTED, rect.left + 8, rect.top + 4)
-        self._text(f"{minimum:+.1f}", self.font_tiny, self.MUTED, rect.left + 8, rect.bottom - 18)
+        self._text(f"{minimum:+.1f}", self.font_tiny, self.MUTED, rect.left + 8, rect.bottom - 22)
 
     def _reward_bar(
         self,
@@ -1034,21 +983,21 @@ class NeonRenderer:
         width: int,
         color: tuple[int, int, int],
     ) -> None:
-        self._text(label, self.font_tiny, self.MUTED, x, y - 4)
-        bar_x = x + 72
-        bar_width = width - 120
-        pygame.draw.rect(self.screen, (25, 35, 49), (bar_x, y, bar_width, 7), border_radius=3)
+        self._text(label, self.font_tiny, self.MUTED, x, y - 5)
+        bar_x = x + 78
+        bar_width = width - 132
+        pygame.draw.rect(self.screen, self.PANEL_RAISED, (bar_x, y, bar_width, 7), border_radius=3)
         normalized = min(abs(value) / 0.22, 1.0)
-        draw_color = color if value >= 0 else self.RED
+        draw_color = color if value >= 0 else self.DANGER
         pygame.draw.rect(
             self.screen,
             draw_color,
-            (bar_x, y, max(1, int(bar_width * normalized)), 7),
+            (bar_x, y, max(1, round(bar_width * normalized)), 7),
             border_radius=3,
         )
-        self._text(f"{value:+.3f}", self.font_tiny, self.TEXT, x + width - 43, y - 5)
+        self._text(f"{value:+.3f}", self.font_tiny, self.TEXT, x + width - 48, y - 6)
 
-    def _pedal_bar(
+    def _value_bar(
         self,
         label: str,
         value: float,
@@ -1057,16 +1006,16 @@ class NeonRenderer:
         width: int,
         color: tuple[int, int, int],
     ) -> None:
-        self._text(label, self.font_tiny, self.MUTED, x, y - 13)
-        pygame.draw.rect(self.screen, (25, 35, 49), (x, y + 5, width, 8), border_radius=4)
+        self._text(label, self.font_tiny, self.MUTED, x, y - 20)
+        pygame.draw.rect(self.screen, self.PANEL_RAISED, (x, y + 4, width, 9), border_radius=4)
         pygame.draw.rect(
             self.screen,
             color,
-            (x, y + 5, max(2, int(width * value)), 8),
+            (x, y + 4, max(2, round(width * value)), 9),
             border_radius=4,
         )
 
-    def _gauge(
+    def _progress_bar(
         self,
         x: int,
         y: int,
@@ -1074,40 +1023,63 @@ class NeonRenderer:
         value: float,
         color: tuple[int, int, int],
     ) -> None:
-        pygame.draw.rect(self.screen, (26, 36, 49), (x, y, width, 12), border_radius=6)
+        pygame.draw.rect(self.screen, self.PANEL_RAISED, (x, y, width, 9), border_radius=4)
         pygame.draw.rect(
             self.screen,
             color,
-            (x, y, max(3, int(width * value)), 12),
-            border_radius=6,
+            (x, y, max(2, round(width * min(max(value, 0.0), 1.0))), 9),
+            border_radius=4,
         )
-        for fraction in (0.33, 0.66):
-            line_x = x + int(width * fraction)
-            pygame.draw.line(self.screen, (8, 15, 25), (line_x, y), (line_x, y + 12), 2)
 
-    def _stat_box(
+    def _small_card(
         self,
+        rect: pygame.Rect,
         label: str,
         value: str,
-        x: int,
-        y: int,
-        width: int,
+        color: tuple[int, int, int] | None = None,
+    ) -> None:
+        pygame.draw.rect(self.screen, self.PANEL_RAISED, rect, border_radius=9)
+        self._text(label, self.font_tiny, self.MUTED, rect.x + 11, rect.y + 9)
+        self._text(
+            value,
+            self.font_small_bold,
+            color or self.TEXT,
+            rect.x + 11,
+            rect.y + 37,
+            max_width=rect.width - 22,
+        )
+
+    def _ttc_card(
+        self,
+        rect: pygame.Rect,
+        label: str,
+        value: str,
         color: tuple[int, int, int],
     ) -> None:
-        pygame.draw.rect(self.screen, (14, 27, 42), (x, y, width, 54), border_radius=10)
-        pygame.draw.line(self.screen, color, (x + 1, y + 8), (x + 1, y + 46), 3)
-        self._text(label, self.font_tiny, self.MUTED, x + 12, y + 7)
-        self._text(value, self.font_medium, color, x + 12, y + 25)
+        pygame.draw.rect(self.screen, self.PANEL_RAISED, rect, border_radius=9)
+        pygame.draw.rect(
+            self.screen,
+            color,
+            (rect.x, rect.y + 9, 3, rect.height - 18),
+            border_radius=2,
+        )
+        self._text(label, self.font_tiny, self.MUTED, rect.x + 12, rect.y + 10)
+        self._text(
+            value,
+            self.font_medium,
+            color,
+            rect.x + 12,
+            rect.y + 39,
+            max_width=rect.width - 20,
+        )
 
-    def _mini_metric(self, label: str, value: object, x: int, y: int) -> None:
+    def _metric_row(self, label: str, value: str, x: int, y: int, width: int) -> None:
         self._text(label, self.font_tiny, self.MUTED, x, y)
-        value_surface = self.font_small_bold.render(str(value), True, self.TEXT)
-        self.screen.blit(value_surface, (x + 105, y - 2))
-
-    def _metric_pair(self, label: str, value: str, x: int, y: int) -> None:
-        self._text(label, self.font_small, self.MUTED, x, y)
-        value_surface = self.font_small_bold.render(value, True, self.TEXT)
-        self.screen.blit(value_surface, (x + 146, y - 1))
+        rendered = self.font_small_bold.render(str(value), True, self.TEXT)
+        if rendered.get_width() > width - 112:
+            value_text = self._ellipsize(str(value), self.font_small_bold, width - 112)
+            rendered = self.font_small_bold.render(value_text, True, self.TEXT)
+        self.screen.blit(rendered, (x + width - rendered.get_width(), y - 2))
 
     def _section_title(
         self,
@@ -1116,29 +1088,56 @@ class NeonRenderer:
         y: int,
         color: tuple[int, int, int],
     ) -> None:
-        pygame.draw.rect(self.screen, color, (x, y + 3, 4, 18), border_radius=2)
-        self._text(text, self.font_small_bold, self.TEXT, x + 13, y)
+        pygame.draw.rect(self.screen, color, (x, y + 2, 3, 20), border_radius=2)
+        self._text(text, self.font_small_bold, self.TEXT, x + 12, y)
 
     def _divider(self, x: int, y: int, width: int) -> None:
-        pygame.draw.line(self.screen, (43, 57, 76), (x, y), (x + width, y), 1)
+        pygame.draw.line(self.screen, self.DIVIDER, (x, y), (x + width, y))
 
-    def _glass_panel(
+    def _panel(self, rect: pygame.Rect, *, raised: bool = False) -> None:
+        pygame.draw.rect(
+            self.screen,
+            self.PANEL_RAISED if raised else self.PANEL,
+            rect,
+            border_radius=14,
+        )
+        pygame.draw.rect(self.screen, self.DIVIDER, rect, 1, border_radius=14)
+
+    def _side_status(
         self,
         rect: pygame.Rect,
-        *,
-        alpha: int = 215,
-        radius: int = 16,
+        title: str,
+        detail: str,
+        color: tuple[int, int, int],
     ) -> None:
-        panel = pygame.Surface(rect.size, pygame.SRCALPHA)
-        pygame.draw.rect(panel, (*self.PANEL, alpha), panel.get_rect(), border_radius=radius)
-        pygame.draw.rect(panel, (76, 105, 139, 85), panel.get_rect(), 1, border_radius=radius)
-        self.screen.blit(panel, rect.topleft)
+        self._panel(rect, raised=True)
+        self._center_text_in_rect(title, self.font_medium, color, rect.move(0, -18))
+        self._center_text_in_rect(detail, self.font_tiny, self.MUTED, rect.move(0, 22))
 
-    def _pill(self, label: str, x: int, y: int, color: tuple[int, int, int]) -> None:
-        surface = self.font_tiny.render(label, True, (5, 20, 27))
-        rect = pygame.Rect(x, y, surface.get_width() + 22, 25)
+    def _pill(
+        self,
+        label: str,
+        x: int,
+        y: int,
+        color: tuple[int, int, int],
+        *,
+        align_right: bool = False,
+    ) -> None:
+        surface = self.font_tiny.render(label, True, self.CANVAS)
+        rect = pygame.Rect(x, y, surface.get_width() + 18, 25)
+        if align_right:
+            rect.right = x
         pygame.draw.rect(self.screen, color, rect, border_radius=12)
-        self.screen.blit(surface, (x + 11, y + 4))
+        self.screen.blit(surface, (rect.x + 9, rect.y + 3))
+
+    @staticmethod
+    def _ellipsize(text: str, font: pygame.font.Font, max_width: int) -> str:
+        if font.size(text)[0] <= max_width:
+            return text
+        candidate = text
+        while candidate and font.size(candidate + "…")[0] > max_width:
+            candidate = candidate[:-1]
+        return candidate.rstrip() + "…"
 
     def _text(
         self,
@@ -1147,18 +1146,13 @@ class NeonRenderer:
         color: tuple[int, int, int],
         x: int,
         y: int,
+        *,
+        max_width: int | None = None,
     ) -> None:
-        self.screen.blit(font.render(text, True, color), (x, y))
-
-    def _center_text(
-        self,
-        text: str,
-        font: pygame.font.Font,
-        color: tuple[int, int, int],
-        y: int,
-    ) -> None:
-        surface = font.render(text, True, color)
-        self.screen.blit(surface, surface.get_rect(center=(self.WIDTH // 2, y)))
+        display_text = str(text)
+        if max_width is not None:
+            display_text = self._ellipsize(display_text, font, max_width)
+        self.screen.blit(font.render(display_text, True, color), (x, y))
 
     def _center_text_in_rect(
         self,

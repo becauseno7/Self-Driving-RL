@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "release_version": "1.0.0",
+  "package": "Self-Driving RL layered driver",
+  "publication_status": "pending_user_approval",
+  "license_status": "pending_user_approval",
+  "hugging_face_repository": null,
+  "github_release_url": null,
+  "required_source": {
+    "repository": "https://github.com/becauseno7/Self-Driving-RL",
+    "tag": "v1.0.0",
+    "publication_status": "pending_user_approval"
+  },
+  "policy_stack": {
+    "simulator_observation_size": 33,
+    "simulator_action_count": 9,
+    "base": "V5 QR-DQN selected checkpoint from a 2,500,000-step run",
+    "preference_layer": "V6 confidence-gated RLAIF override",
+    "controller": "V7/V8 deterministic persistent-intent and braking code",
+    "dagger_included": false
+  },
+  "artifacts": [
+    {
+      "path": "model.zip",
+      "size_bytes": 3594202,
+      "sha256": "5780BBEE5CE2009459F3AA796AA4982FBF33222DCC182883D31AFAA16C597039",
+      "role": "frozen_v5_qrdqn_base",
+      "format": "stable_baselines3_zip",
+      "source_run": "runs/game/v5-good-driver-2p5m-restart/model.zip",
+      "selected_checkpoint": true,
+      "trusted_loading_required": true,
+      "public_download_url": null
+    },
+    {
+      "path": "override_model.pt",
+      "size_bytes": 35439,
+      "sha256": "06C3A0CEE04AAF6B8822781FE78F867F513A3019EBBF7FD8D91E10F117146BEC",
+      "role": "v6_confidence_gated_rlaif_override",
+      "format": "pytorch_weights_only_checkpoint",
+      "source_run": "runs/rlaif/v6-good-driver/override_model.pt",
+      "selected_checkpoint": true,
+      "trusted_loading_required": false,
+      "public_download_url": null
+    }
+  ],
+  "supporting_files": [
+    {
+      "path": "config/v5-training-config.json",
+      "role": "training_configuration"
+    },
+    {
+      "path": "config/v6-override-provenance.json",
+      "role": "preference_and_calibration_provenance"
+    },
+    {
+      "path": "evaluation/v8-braking-final-unseen-100.json",
+      "role": "final_100_route_evaluation"
+    }
+  ],
+  "evaluation": {
+    "episodes": 100,
+    "seed_start": 690000,
+    "seed_end": 690099,
+    "difficulty": "hard",
+    "dynamic_traffic": true,
+    "episode_seconds": 45.0,
+    "completion_rate": 1.0,
+    "crash_rate": 0.0,
+    "mean_net_overtakes": 8.43,
+    "passing_response_rate": 0.9022403258655805,
+    "clear_road_deep_slowdown_rate": 0.0004
+  }
+}

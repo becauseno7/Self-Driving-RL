@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f2f0ea" />
+    <meta
+      name="description"
+      content="Deterministic browser playback of the Frozen v1.0 layered driver."
+    />
+    <title>Policy Roadbook · Frozen v1.0 layered driver replay</title>
+    <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="wordmark" href="./" aria-label="Policy Roadbook home">
+        <span class="wordmark-mark" aria-hidden="true"><i></i><i></i></span>
+        <span>Policy Roadbook</span>
+      </a>
+      <span class="header-note">Self-Driving RL · browser record</span>
+    </header>
+
+    <main>
+      <section class="intro" aria-labelledby="page-title">
+        <div>
+          <p class="record-label"><span aria-hidden="true"></span> Recorded policy run · Frozen v1.0 layered driver</p>
+          <h1 id="page-title">A real policy drive,<br />carefully replayed.</h1>
+        </div>
+        <p class="disclosure">
+          Generated offline by the real Python policy. This is deterministic playback,
+          not live browser inference.
+        </p>
+      </section>
+
+      <section class="experience" aria-label="Recorded policy drive">
+        <div class="road-column">
+          <div class="canvas-shell" id="canvas-shell">
+            <canvas
+              id="road"
+              width="1280"
+              height="760"
+              role="img"
+              aria-label="Loading recorded highway drive"
+            >
+              A browser with Canvas support is required to view the recorded drive.
+            </canvas>
+            <div class="canvas-topline" aria-hidden="true">
+              <span id="run-state"><i></i> Loading recording</span>
+              <span id="canvas-seed">Seed —</span>
+            </div>
+            <div class="load-state" id="load-state" role="status">
+              <span class="loader" aria-hidden="true"></span>
+              <strong>Opening the road record</strong>
+              <small>Loading verified telemetry…</small>
+            </div>
+          </div>
+
+          <div class="transport" aria-label="Replay controls">
+            <button class="play-button" id="play" type="button" aria-label="Pause replay">
+              <svg class="pause-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M7 5h4v14H7zM14 5h4v14h-4z" />
+              </svg>
+              <svg class="play-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m8 5 11 7-11 7z" />
+              </svg>
+              <span id="play-label">Pause</span>
+            </button>
+
+            <div class="timeline">
+              <label class="sr-only" for="scrub">Replay position</label>
+              <input id="scrub" type="range" min="0" max="45" step="0.01" value="0" />
+              <div class="time-row">
+                <span id="elapsed">00:00.0</span>
+                <span id="duration">00:45.0</span>
+              </div>
+            </div>
+
+            <label class="select-control" for="speed">
+              <span>Speed</span>
+              <select id="speed">
+                <option value="0.5">0.5×</option>
+                <option value="1" selected>1×</option>
+                <option value="2">2×</option>
+                <option value="4">4×</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="run-controls">
+            <label class="seed-control" for="seed">
+              <span>Recorded route</span>
+              <select id="seed" aria-label="Select recorded traffic seed"></select>
+            </label>
+            <button class="quiet-button" id="restart" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5.5 7.5A8 8 0 1 1 4 13M5.5 7.5V3m0 4.5H10" />
+              </svg>
+              Restart route
+            </button>
+            <button class="quiet-button toggle-button" id="sensors" type="button" aria-pressed="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 12h2m12 0h2M6.3 6.3l1.4 1.4m8.6 8.6 1.4 1.4m0-11.4-1.4 1.4M7.7 16.3l-1.4 1.4M12 4v2m0 12v2" />
+                <circle cx="12" cy="12" r="3.5" />
+              </svg>
+              Sensor view
+            </button>
+          </div>
+        </div>
+
+        <aside class="telemetry" aria-label="Drive telemetry">
+          <div class="telemetry-heading">
+            <div>
+              <p class="section-kicker">Replay telemetry</p>
+              <h2 id="intent">Preparing replay</h2>
+            </div>
+            <span class="intent-mark" id="intent-mark" aria-hidden="true">—</span>
+          </div>
+          <p class="intent-reason" id="intent-reason">Reading the offline record.</p>
+
+          <div class="primary-stat">
+            <span class="stat-label">Vehicle speed</span>
+            <p><strong id="speed-value">—</strong><span>km/h</span></p>
+            <div class="speed-track" aria-hidden="true"><i id="speed-fill"></i><b id="target-pin"></b></div>
+            <div class="speed-caption"><span>0</span><span id="target-speed">Target —</span><span>122</span></div>
+          </div>
+
+          <dl class="metric-grid">
+            <div>
+              <dt>Front TTC</dt>
+              <dd id="ttc">—</dd>
+            </div>
+            <div>
+              <dt>Net passes</dt>
+              <dd id="passes">—</dd>
+            </div>
+            <div>
+              <dt>Distance</dt>
+              <dd id="distance">—</dd>
+            </div>
+            <div>
+              <dt>Return</dt>
+              <dd id="return">—</dd>
+            </div>
+          </dl>
+
+          <div class="challenge-block">
+            <div class="challenge-row">
+              <span>Current road phase</span>
+              <strong id="challenge">—</strong>
+            </div>
+            <div class="challenge-track" aria-hidden="true"><i id="challenge-fill"></i></div>
+            <p id="action">Control: —</p>
+          </div>
+
+          <div class="run-summary">
+            <p class="section-kicker">Recorded outcome</p>
+            <div class="summary-row">
+              <strong id="outcome">—</strong>
+              <span id="summary-distance">—</span>
+            </div>
+            <p id="summary-copy">Final metrics are bundled with each replay.</p>
+          </div>
+        </aside>
+      </section>
+
+      <section class="provenance" aria-labelledby="provenance-title">
+        <div>
+          <p class="section-kicker">What you are seeing</p>
+          <h2 id="provenance-title">Simulation truth, rendered for the web.</h2>
+        </div>
+        <p>
+          The car positions, traffic decisions, safety readings, actions, and final result
+          were sampled from the Python environment at 10 Hz. The browser only interpolates
+          between those samples for smooth motion.
+        </p>
+        <details>
+          <summary>Recording provenance</summary>
+          <dl class="provenance-list">
+            <div><dt>Source commit</dt><dd id="source-commit">—</dd></div>
+            <div><dt>Base model SHA-256</dt><dd id="base-hash">—</dd></div>
+            <div><dt>Override model SHA-256</dt><dd id="override-hash">—</dd></div>
+            <div><dt>Replay schema</dt><dd id="schema">—</dd></div>
+          </dl>
+        </details>
+      </section>
+    </main>
+
+    <footer>
+      <span>Self-Driving RL</span>
+      <span>Offline policy evidence · no inference service</span>
+    </footer>
+  </body>
+</html>

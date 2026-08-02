@@ -1,0 +1,62 @@
+{
+  "environment": "NeonHighwayEnv-v5",
+  "timesteps": 2500000,
+  "seed": 7,
+  "preset": "gpu",
+  "algorithm": "qrdqn",
+  "parallel_envs": 8,
+  "mirror_augmentation": true,
+  "difficulty": "hard",
+  "driving_objective": {
+    "cruise_speed_mps": 27.0,
+    "overtake_bonus": 0.6,
+    "passed_by_traffic_cost": 0.35,
+    "blocked_with_safe_pass_cost": 0.005,
+    "lane_change_cost": 0.05,
+    "unsafe_lane_change_cost": 0.75,
+    "crash_penalty": -30.0
+  },
+  "episode_seconds": 45.0,
+  "endless": false,
+  "evaluation_seed": 10000,
+  "evaluation_episodes": 100,
+  "validation_frequency": 125000,
+  "validation_episodes": 100,
+  "validation_seed": 20000,
+  "rendered_training": false,
+  "render_fps": 120,
+  "render_speed": 12.0,
+  "device": "cuda",
+  "dqn": {
+    "policy_kwargs": {
+      "net_arch": [
+        256,
+        256
+      ],
+      "n_quantiles": 64
+    },
+    "learning_rate": 0.00015,
+    "buffer_size": 750000,
+    "learning_starts": 25000,
+    "batch_size": 512,
+    "gamma": 0.995,
+    "tau": 0.02,
+    "train_freq": [
+      1,
+      "step"
+    ],
+    "gradient_steps": 4,
+    "target_update_interval": 500,
+    "exploration_fraction": 0.3,
+    "exploration_initial_eps": 1.0,
+    "exploration_final_eps": 0.02
+  },
+  "versions": {
+    "gymnasium": "1.3.0",
+    "numpy": "2.3.2",
+    "pygame-ce": "2.5.7",
+    "sb3-contrib": "2.9.0",
+    "stable-baselines3": "2.9.0",
+    "torch": "2.13.0+cu126"
+  }
+}

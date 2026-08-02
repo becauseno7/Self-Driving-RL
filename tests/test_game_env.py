@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pygame
 
 from self_driving_rl.game_env import (
     ACTION_COUNT,
@@ -834,6 +835,117 @@ def test_preference_telemetry_counts_missed_passes_and_quick_reversals() -> None
     assert env.rapid_lane_changes == 1
     assert env.lane_reversals == 1
 
+
+def test_renderer_reserves_at_least_fifty_five_percent_for_the_road() -> None:
+    assert NeonRenderer.ROAD_WIDTH / NeonRenderer.WIDTH >= 0.55
+    assert len(NeonRenderer.DEFAULT_FUNCTIONAL_LABELS) <= 18
+    smallest_scale = 1280 / NeonRenderer.WIDTH
+    assert NeonRenderer.MIN_FUNCTIONAL_FONT_PX * smallest_scale >= 14
+    for viewport in ((1280, 720), (1440, 810), (1920, 1080)):
+        rect = NeonRenderer._letterbox_rect(viewport)
+        assert rect.size == viewport
+        assert rect.center == (viewport[0] // 2, viewport[1] // 2)
+
+
+def test_renderer_analysis_and_teaching_views_stay_off_the_road() -> None:
+    env = NeonHighwayEnv(difficulty_mode="standard")
+    renderer = NeonRenderer(human=False, fps=60)
+    try:
+        assert min(
+            font.get_height()
+            for font in (
+                renderer.font_tiny,
+                renderer.font_small,
+                renderer.font_small_bold,
+                renderer.font_medium,
+                renderer.font_large,
+                renderer.font_speed,
+            )
+        ) >= NeonRenderer.MIN_FUNCTIONAL_FONT_PX
+        env.reset(seed=720)
+        renderer._render_frame(env, crash_phase=0.0)
+        drive_frame = renderer._frame_array().copy()
+
+        pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_TAB))
+        assert renderer._handle_events()
+        assert renderer.analysis_open
+        renderer._render_frame(env, crash_phase=0.0)
+        analysis_frame = renderer._frame_array().copy()
+
+        renderer.analysis_open = False
+        env.hud_data["dagger_collecting"] = True
+        renderer._render_frame(env, crash_phase=0.0)
+        teaching_frame = renderer._frame_array().copy()
+    finally:
+        renderer.close()
+        env.close()
+
+    road = slice(NeonRenderer.ROAD_LEFT, NeonRenderer.ROAD_LEFT + NeonRenderer.ROAD_WIDTH)
+    assert not np.array_equal(drive_frame, analysis_frame)
+    assert not np.array_equal(drive_frame, teaching_frame)
+    assert np.array_equal(drive_frame[:, road], analysis_frame[:, road])
+    assert np.array_equal(drive_frame[:, road], teaching_frame[:, road])
+
+
+def test_renderer_analysis_restores_motion_diagnostics() -> None:
+    env = NeonHighwayEnv(difficulty_mode="standard")
+    renderer = NeonRenderer(human=False, fps=60)
+    captured: dict[str, str] = {}
+    original_metric_row = renderer._metric_row
+
+    def capture_metric(label: str, value: str, x: int, y: int, width: int) -> None:
+        captured[label] = value
+        original_metric_row(label, value, x, y, width)
+
+    try:
+        env.reset(seed=722)
+        env.traffic_lane_changes = 7
+        env.longitudinal_acceleration = -1.25
+        renderer._metric_row = capture_metric
+        renderer._draw_analysis_right(env)
+    finally:
+        renderer.close()
+        env.close()
+
+    assert captured["Traffic lane changes"] == "7"
+    assert captured["Longitudinal accel"] == "-1.25 m/s²"
+
+
+def test_renderer_terminal_states_are_calm_side_rail_updates() -> None:
+    env = NeonHighwayEnv(difficulty_mode="standard")
+    renderer = NeonRenderer(human=False, fps=60)
+    crash_text: list[str] = []
+    original_text = renderer._text
+
+    def capture_text(text: str, *args, **kwargs) -> None:
+        crash_text.append(text)
+        original_text(text, *args, **kwargs)
+
+    try:
+        env.reset(seed=721)
+        renderer._render_frame(env, crash_phase=0.0)
+        drive_frame = renderer._frame_array().copy()
+
+        env.crashed = True
+        renderer._text = capture_text
+        renderer._render_frame(env, crash_phase=1.0)
+        crash_frame = renderer._frame_array().copy()
+        renderer._text = original_text
+
+        env.crashed = False
+        env.completed = True
+        renderer._render_frame(env, crash_phase=0.0)
+        completion_frame = renderer._frame_array().copy()
+    finally:
+        renderer.close()
+        env.close()
+
+    road = slice(NeonRenderer.ROAD_LEFT, NeonRenderer.ROAD_LEFT + NeonRenderer.ROAD_WIDTH)
+    assert crash_frame.shape == (NeonRenderer.HEIGHT, NeonRenderer.WIDTH, 3)
+    assert completion_frame.shape == crash_frame.shape
+    assert np.array_equal(drive_frame[:, road], crash_frame[:, road])
+    assert np.array_equal(drive_frame[:, road], completion_frame[:, road])
+    assert not any("near miss" in text.lower() for text in crash_text)
 
 def test_longitudinal_telemetry_finds_clear_braking_and_pedal_reversals() -> None:
     env = NeonHighwayEnv(difficulty_mode="standard")
