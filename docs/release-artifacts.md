@@ -1,8 +1,9 @@
 # Release artifact provenance
 
 Self-Driving RL v1.0 uses two learned artifacts plus deterministic controller
-code. The artifacts are staged under `release/huggingface/` for inspection, but
-they are not public downloads until the user approves a license and publication.
+code. The code, documentation, and learned artifacts are approved under the MIT
+License. The artifacts are staged under `release/huggingface/` for inspection,
+but are not public downloads until publication is explicitly approved.
 
 ## Frozen stack
 
@@ -61,9 +62,13 @@ It recorded 100% completion, zero crashes, 8.43 mean net passes, 90.2% passing
 response, and 0.04% clear-road deep-slowdown steps. These numbers describe this
 simulator and seed set only.
 
-## Publication placeholders
+## Publication targets
 
-The intended Hugging Face repository ID, artifact download URLs, public model
-license, GitHub release URL, and final release tag are deliberately absent.
-They must be filled only after user approval. The authoritative machine-readable
-inventory is `release/huggingface/artifact-manifest.json`.
+- Hugging Face: `slicedonions/self-driving-rl-v1`
+- GitHub source tag: `v1.0.0`
+- GitHub release: `https://github.com/becauseno7/Self-Driving-RL/releases/tag/v1.0.0`
+- Browser replay: `https://becauseno7.github.io/Self-Driving-RL/`
+
+These targets remain unpublished until the user approves the external release
+actions. The authoritative machine-readable inventory is
+`release/huggingface/artifact-manifest.json`.

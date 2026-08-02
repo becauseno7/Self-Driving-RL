@@ -34,11 +34,11 @@ provenance, rejected-experiment notes, tests, and a browser replay generated
 from three real frozen-policy trajectories. The browser page is deterministic
 playback rather than pretending that PyTorch inference is running in your tab.
 
-Browser replay: <PENDING_GITHUB_PAGES_URL>
+Browser replay: https://becauseno7.github.io/Self-Driving-RL/
 
-Code: <PENDING_GITHUB_RELEASE_URL>
+Code: https://github.com/becauseno7/Self-Driving-RL/releases/tag/v1.0.0
 
-Models and evaluation record: <PENDING_HUGGING_FACE_URL>
+Models and evaluation record: https://huggingface.co/slicedonions/self-driving-rl-v1
 
 I used AI heavily while building it, but treated it as a learning project: I
 made the driving decisions, labelled demonstrations, compared matched-seed
@@ -54,7 +54,7 @@ design, evaluation protocol, or next simulator challenge is welcome.
 
 ## Before posting
 
-- Replace every pending URL and confirm it works in a signed-out browser.
+- Confirm every release URL works in a signed-out browser.
 - Keep the simulator-only qualification next to the evaluation numbers.
 - Upload a native video rather than a screen recording containing terminal or
   desktop clutter.

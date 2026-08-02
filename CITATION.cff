@@ -3,6 +3,7 @@ message: "If you use Self-Driving RL in teaching or research, please cite this s
 title: "Self-Driving RL"
 type: software
 version: 1.0.0
+license: MIT
 authors:
   - family-names: Basak
     given-names: Shuvra

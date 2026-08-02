@@ -146,6 +146,18 @@ human aesthetic judgment. Preserve a rollback commit before each major wave.
   resolved.
 - Model and replay artifacts matched their declared sizes and SHA-256 hashes;
   release scanning found no credentials, personal home paths, or email leaks.
-- Final release staging score: 8.8/10. The remaining gates are legal and hosted:
-  approve code/model licenses, publish the source tag and artifacts, deploy
-  Pages, replace placeholders, and verify public clean-clone/download paths.
+- Final release staging score: 8.8/10. After the later license approval, the
+  remaining gates are hosted: publish the source tag and artifacts, deploy
+  Pages, and verify public clean-clone/download paths.
+
+### License approval
+
+- The user approved MIT for the code and both model artifacts on 2026-08-02.
+- The confirmed Hugging Face namespace is `slicedonions`; the selected model
+  repository is `slicedonions/self-driving-rl-v1`.
+- Root and standalone model-package MIT license files, package metadata, model
+  card metadata, manifest URLs, release notes, and launch draft were updated.
+- Three release-metadata regression tests bring the integrated suite to 109
+  passing tests and verify MIT coverage, artifact hashes, and URL resolution.
+- External push, tag, Pages deployment, Hugging Face creation/upload, and Reddit
+  posting still require explicit publication approval.

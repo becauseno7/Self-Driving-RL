@@ -64,6 +64,6 @@ Please include:
 4. matched-seed evaluation evidence for behavior changes;
 5. any compatibility, artifact, or documentation impact.
 
-The project license is pending. Until it is selected, ask the maintainer before
-submitting a substantial external contribution; no contribution terms should
-be inferred from the current absence of a `LICENSE` file.
+By submitting a contribution, you agree that it may be distributed under the
+project's [MIT License](LICENSE). Keep third-party code, data, and model assets
+compatible with that license and document their provenance in the pull request.

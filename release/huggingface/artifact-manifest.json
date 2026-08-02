@@ -3,9 +3,11 @@
   "release_version": "1.0.0",
   "package": "Self-Driving RL layered driver",
   "publication_status": "pending_user_approval",
-  "license_status": "pending_user_approval",
-  "hugging_face_repository": null,
-  "github_release_url": null,
+  "license_status": "approved",
+  "code_license": "MIT",
+  "model_license": "MIT",
+  "hugging_face_repository": "slicedonions/self-driving-rl-v1",
+  "github_release_url": "https://github.com/becauseno7/Self-Driving-RL/releases/tag/v1.0.0",
   "required_source": {
     "repository": "https://github.com/becauseno7/Self-Driving-RL",
     "tag": "v1.0.0",
@@ -29,7 +31,7 @@
       "source_run": "runs/game/v5-good-driver-2p5m-restart/model.zip",
       "selected_checkpoint": true,
       "trusted_loading_required": true,
-      "public_download_url": null
+      "public_download_url": "https://huggingface.co/slicedonions/self-driving-rl-v1/resolve/main/model.zip"
     },
     {
       "path": "override_model.pt",
@@ -40,7 +42,7 @@
       "source_run": "runs/rlaif/v6-good-driver/override_model.pt",
       "selected_checkpoint": true,
       "trusted_loading_required": false,
-      "public_download_url": null
+      "public_download_url": "https://huggingface.co/slicedonions/self-driving-rl-v1/resolve/main/override_model.pt"
     }
   ],
   "supporting_files": [

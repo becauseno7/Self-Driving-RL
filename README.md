@@ -47,8 +47,8 @@ as `release/huggingface/evaluation/v8-braking-final-unseen-100.json`.
 ## Five-minute setup
 
 Python 3.11 or 3.12 is required. You can run the simulator immediately; the
-recommended trained driver additionally needs the two pending model artifacts
-described in [Install the frozen models](#install-the-frozen-models).
+recommended trained driver additionally needs the two model artifacts described
+in [Install the frozen models](#install-the-frozen-models).
 
 ### Windows (PowerShell + `uv`)
 
@@ -87,13 +87,13 @@ or `python -m pytest` / `python -m ruff check .`.
 
 ## Install the frozen models
 
-The model repository and release URLs have **not been published yet**. Do not
-paste the placeholders below into a script. After the user approves a model
-license and the artifacts are uploaded, replace all three pending values:
+The approved model repository is `slicedonions/self-driving-rl-v1`. The URLs
+below will become available after publication is explicitly approved and the
+staged package is uploaded:
 
 ```powershell
-$BaseModelUrl = "<PENDING_BASE_MODEL_DOWNLOAD_URL>"
-$OverrideModelUrl = "<PENDING_OVERRIDE_MODEL_DOWNLOAD_URL>"
+$BaseModelUrl = "https://huggingface.co/slicedonions/self-driving-rl-v1/resolve/main/model.zip"
+$OverrideModelUrl = "https://huggingface.co/slicedonions/self-driving-rl-v1/resolve/main/override_model.pt"
 New-Item -ItemType Directory -Force models
 Invoke-WebRequest $BaseModelUrl -OutFile models\model.zip
 Invoke-WebRequest $OverrideModelUrl -OutFile models\override_model.pt
@@ -275,5 +275,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development and experiment
 expectations, [SECURITY.md](SECURITY.md) for private vulnerability reporting,
 and [CITATION.cff](CITATION.cff) for citation metadata.
 
-The public code/model license is still pending user approval. No permission
-should be inferred from the absence of a `LICENSE` file.
+The source code, documentation, and the two released model artifacts are
+available under the [MIT License](LICENSE). This permissive license does not
+change the simulator-only scope or create any real-vehicle safety warranty.

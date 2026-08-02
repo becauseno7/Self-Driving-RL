@@ -10,8 +10,7 @@ tags:
   - gymnasium
   - simulated-driving
   - stable-baselines3
-license: other
-license_name: "PENDING: no public code or model license has been approved"
+license: mit
 model-index:
   - name: Self-Driving RL v1.0 layered driver
     results:
@@ -54,10 +53,10 @@ braking, and safety logic. No DAgger weights are included: the evaluated DAgger
 candidates were rejected by the matched-seed promotion gate and are not part of
 the recommended driver.
 
-> **License and publication status:** pending. `license: other` above is a
-> schema-compatible placeholder, not a grant of permission. The user must
-> approve a public code/model license before this folder is uploaded. The final
-> Hugging Face repository ID and download URLs are also pending.
+> **License:** the code, documentation, `model.zip`, and `override_model.pt` are
+> released under the MIT License; see `LICENSE`. The target model repository is
+> `slicedonions/self-driving-rl-v1`. Publication is still pending explicit user
+> approval, so the repository and download URLs may not exist yet.
 
 ## Model details
 
@@ -105,8 +104,8 @@ provenance is in `config/v6-override-provenance.json`.
 
 ## Install
 
-The package has not been uploaded. After the user approves publication, replace
-`<PENDING_HF_REPOSITORY_ID>`; do not run this placeholder unchanged:
+The package has not been uploaded. After publication is approved and the model
+repository exists, install it with:
 
 ```bash
 git clone https://github.com/becauseno7/Self-Driving-RL.git
@@ -115,7 +114,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e . huggingface_hub
-hf download <PENDING_HF_REPOSITORY_ID> model.zip override_model.pt --local-dir models
+hf download slicedonions/self-driving-rl-v1 model.zip override_model.pt --local-dir models
 ```
 
 Verify both downloads before use:
